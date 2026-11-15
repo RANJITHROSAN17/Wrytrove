@@ -47,7 +47,21 @@ jobs:
       - name: Install headless Chromium for UI tests
         run: npx playwright install --only-shell chromium
       - name: Browser UI regression tests on Windows
-        run: npm run test:e2e
+        shell: pwsh
+        # Keep the full Playwright output so a failure can be diagnosed from the uploaded artifact.
+        run: |
+          npm run test:e2e 2>&1 | Tee-Object -FilePath e2e-output.txt
+          exit $LASTEXITCODE
+      - name: Upload browser test output on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: Wrytrove-e2e-output-windows
+          path: |
+            e2e-output.txt
+            test-results
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Rust file-safety tests
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib --locked
       - name: Prepare dependency SBOM and license gate
