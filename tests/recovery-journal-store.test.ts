@@ -82,9 +82,30 @@ describe('draft journal store', () => {
       };
       open.onerror = () => reject(open.error);
     });
-    const { drafts, skipped } = await readRecoveryDrafts();
+    const { drafts, skipped, partial } = await readRecoveryDrafts();
     expect(skipped).toBeGreaterThanOrEqual(1);
     expect(drafts.find((d) => d.docId === id)).toMatchObject({ sequence: 1, text: 'complete draft' });
+    // The newer unfinished write is reported separately; the restored draft is still the complete one.
+    expect(partial).toContainEqual({ docId: id, sequence: 2 });
+  });
+
+  it('reports a newer unfinished draft with no complete fallback as partial, not as a restored draft', async () => {
+    const id = 'store-partial-only';
+    const { manifest } = await buildJournalEntry(draft(id, 5, 'never finished'));
+    await new Promise<void>((resolve, reject) => {
+      const open = indexedDB.open(JOURNAL_DB, 1);
+      open.onsuccess = () => {
+        const db = open.result;
+        const tx = db.transaction('manifests', 'readwrite');
+        tx.objectStore('manifests').put(manifest);
+        tx.oncomplete = () => { db.close(); resolve(); };
+        tx.onerror = () => reject(tx.error);
+      };
+      open.onerror = () => reject(open.error);
+    });
+    const { drafts, partial } = await readRecoveryDrafts();
+    expect(drafts.find((d) => d.docId === id)).toBeUndefined();
+    expect(partial).toContainEqual({ docId: id, sequence: 5 });
   });
 
   it('a quota failure mid-transaction commits nothing and keeps the previous complete draft', async () => {

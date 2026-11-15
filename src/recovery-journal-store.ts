@@ -34,10 +34,20 @@ export interface RecoveryRead {
   /** Entries skipped because chunks were missing or failed verification. */
   skipped: number;
   /**
+   * Newer entries that could not be verified, shown separately from the restored draft. Their
+   * document still restores the last complete draft, or nothing if no complete draft exists.
+   */
+  partial: PartialDraft[];
+  /**
    * Documents whose newest draft is sealed with a key that is not loaded. They are not
    * replaced by an older draft; the UI must offer an explicit export or delete decision.
    */
   locked: string[];
+}
+
+export interface PartialDraft {
+  docId: string;
+  sequence: number;
 }
 
 interface SealedManifestRow {
@@ -278,6 +288,7 @@ export async function readRecoveryDrafts(ring: JournalKeyRing | null = null): Pr
     const drafts: DraftInput[] = [];
     const locked: string[] = [];
     let skipped = 0;
+    const partial: PartialDraft[] = [];
     const finished = new Set<string>();
     for (const { row, index } of newestFirst) {
       if (finished.has(index.docId)) continue;
@@ -285,9 +296,13 @@ export async function readRecoveryDrafts(ring: JournalKeyRing | null = null): Pr
       const outcome = await resolveEntry(row, chunks, ring);
       if (outcome.kind === 'ok') { drafts.push(outcome.draft); finished.add(index.docId); }
       else if (outcome.kind === 'locked') { locked.push(index.docId); finished.add(index.docId); }
-      else skipped += 1;
+      else {
+        skipped += 1;
+        // Only entries newer than the document's restored draft (or with no restored draft) are partial.
+        if (!finished.has(index.docId)) partial.push({ docId: index.docId, sequence: index.sequence });
+      }
     }
-    return { drafts, skipped, locked };
+    return { drafts, skipped, locked, partial };
   });
 }
 

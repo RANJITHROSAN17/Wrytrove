@@ -174,7 +174,9 @@ class WrytroveApp {
         const journal = await readRecoveryDrafts(null);
         // Sealed drafts need a key that is not loaded. Never replace them with older text.
         if (journal.locked.length) throw new Error('Recovery drafts are sealed with a key that is not loaded.');
-        if (journal.skipped) this.toast(`${journal.skipped} recovery draft(s) could not be verified and were skipped.`);
+        // A newer unfinished draft is reported on its own; the last complete recovery is still restored.
+        if (journal.partial.length) this.toast(`${journal.partial.length} newer recovery draft(s) were incomplete and were not restored. The last complete recovery is shown where one exists.`);
+        else if (journal.skipped) this.toast(`${journal.skipped} recovery draft(s) could not be verified and were skipped.`);
         const drafts = new Map(journal.drafts.map((draft) => [draft.docId, draft]));
         const snapshotIds = new Set(session?.documents.map((doc) => doc.id) ?? []);
         // Do not silently drop tabs from large saved sessions.
