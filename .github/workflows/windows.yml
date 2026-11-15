@@ -44,6 +44,9 @@ jobs:
           npm run build
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm test
+      # Runs before the browser tests so a Rust result is reported even when the flaky browser step fails.
+      - name: Rust file-safety tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib --locked
       - name: Install headless Chromium for UI tests
         run: npx playwright install --only-shell chromium
       - name: Browser UI regression tests on Windows
@@ -62,8 +65,6 @@ jobs:
             test-results
           if-no-files-found: ignore
           retention-days: 7
-      - name: Rust file-safety tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml --lib --locked
       - name: Prepare dependency SBOM and license gate
         shell: pwsh
         run: |
