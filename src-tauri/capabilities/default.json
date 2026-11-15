@@ -41,7 +41,10 @@
     "allow-workspace-list-directory",
     "allow-workspace-read-file",
     "allow-workspace-create-entry",
-    "allow-journal-key-load"
+    "allow-journal-key-load",
+    "allow-access-revoke",
+    "allow-access-restore",
+    "allow-access-revoked-list"
   ],
   "webviews": [
     "main"

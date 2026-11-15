@@ -611,3 +611,9 @@ html.zen-mode #editor-shell { flex-direction: column; }
 #editor-shell:has(.notes-panel:not([hidden])) > .find-panel { right: calc(250px + 18px); }
 @media (max-width: 1080px) { #editor-shell:has(.notes-panel:not([hidden])) > .find-panel { right: calc(220px + 18px); } }
 @media (max-width: 900px) { #editor-shell:has(.notes-panel:not([hidden])) > .find-panel { right: 18px; } }
+
+.access-leases { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 14px; }
+.access-leases h3 { margin: 0 0 6px; font-size: 14px; }
+.access-lease-list { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 8px; }
+.access-lease-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid var(--line-soft); border-radius: 6px; padding: 8px 10px; font-size: 12px; }
+.access-lease-list small { display: block; color: var(--muted); font-size: 11px; line-height: 1.4; }

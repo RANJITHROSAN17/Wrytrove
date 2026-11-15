@@ -8,6 +8,9 @@ fn main() {
         "workspace_read_file",
         "workspace_create_entry",
         "journal_key_load",
+        "access_revoke",
+        "access_restore",
+        "access_revoked_list",
     ]);
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(manifest))
         .expect("failed to build the Tauri permission manifest");

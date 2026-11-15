@@ -16,6 +16,8 @@ import { hasPartialSessionMetadata, loadSession, loadSettings, saveSession, save
 import { chooseRestoreText, classifyDraft, nextJournalSequence, type DraftInput, type RecoveryRelation } from './recovery-journal';
 import { clearAllDrafts, commitDraft, deleteDraftsFor, readRecoveryDrafts } from './recovery-journal-store';
 import { decideRestore, planRecoveryReview } from './recovery-review';
+import { buildAccessRows, pathInside, type AccessRow, type PanelFolder } from './access-panel';
+import { isAccessRevokedError, listRevokedFolders, restoreFolderAccess, revokeFolderAccess } from './access-revocation';
 import { MARKDOWN_SAMPLE, PYTHON_SAMPLE } from './samples';
 import { icon } from './icons';
 import { makeReviewTarget, reviewTargetIsCurrent, type ReviewTarget } from './change-review';
@@ -1721,6 +1723,72 @@ class WrytroveApp {
     });
   }
 
+  /** AUD-03: the Access leases panel. Lists workspace folders and revoked folders, and applies the rules in access-panel.ts. */
+  private async renderAccessLeases(): Promise<void> {
+    const list = $('#access-leases-list');
+    const status = $('#access-leases-status');
+    status.textContent = '';
+    let revoked: string[];
+    try {
+      revoked = await listRevokedFolders();
+    } catch (error) {
+      list.replaceChildren();
+      status.textContent = `Could not read folder access records: ${this.errorText(error)}`;
+      return;
+    }
+    const openPaths = this.docs.map((doc) => refPath(doc.ref)).filter((path): path is string => !!path);
+    const folders: PanelFolder[] = this.workbench.nativeFolders().map((folder) => ({
+      path: folder.path,
+      name: folder.name,
+      inWorkspace: true,
+      openDocuments: openPaths.filter((path) => pathInside(folder.path, path)).length,
+    }));
+    const rows = buildAccessRows(folders, revoked);
+    list.replaceChildren(...rows.map((row) => this.accessLeaseItem(row)));
+    if (!rows.length) status.textContent = 'No folders are open or revoked.';
+  }
+
+  private accessLeaseItem(row: AccessRow): HTMLLIElement {
+    const item = document.createElement('li');
+    const text = document.createElement('div');
+    const title = document.createElement('strong');
+    title.textContent = row.name;
+    const detail = document.createElement('small');
+    detail.textContent = row.state === 'revoked' ? `Access revoked · ${row.path}` : row.action === 'blocked' ? row.reason : row.path;
+    text.append(title, detail);
+    item.append(text);
+    if (row.state === 'revoked') {
+      item.append(this.accessLeaseButton('Restore access', row.path, async () => {
+        await restoreFolderAccess(row.path);
+        this.toast('Folder access record cleared. Choose the folder again to use it.');
+      }));
+    } else if (row.action === 'revoke') {
+      item.append(this.accessLeaseButton('Revoke access', row.path, async () => {
+        await revokeFolderAccess(row.path);
+        this.toast('Access revoked. Wrytrove will refuse new reads and writes in this folder.');
+      }));
+    }
+    return item;
+  }
+
+  private accessLeaseButton(label: string, path: string, action: () => Promise<void>): HTMLButtonElement {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = label;
+    button.setAttribute('aria-label', `${label}: ${path}`);
+    button.addEventListener('click', () => {
+      button.disabled = true;
+      action()
+        .catch((error: unknown) => {
+          $('#access-leases-status').textContent = isAccessRevokedError(error)
+            ? 'This folder is already revoked.'
+            : `Could not change folder access: ${this.errorText(error)}`;
+        })
+        .finally(() => { void this.renderAccessLeases(); });
+    });
+    return button;
+  }
+
   private showDialog(id: string): void {
     const dialog = $<HTMLDialogElement>(`#${id}`); if (!dialog.open) dialog.showModal();
   }
@@ -1743,7 +1811,7 @@ class WrytroveApp {
       case 'wrap': this.toggleWrap(); break;
       case 'preview-markdown': this.toggleMarkdownPreview(); break;
       case 'theme': this.toggleTheme(); break;
-      case 'settings': this.showDialog('settings-dialog'); break;
+      case 'settings': this.showDialog('settings-dialog'); void this.renderAccessLeases(); break;
       case 'shortcuts': this.showDialog('help-dialog'); break;
       case 'ai': this.toggleAiPanel(); break;
       case 'about': await this.confirm('A little space for big ideas.', `Wrytrove 0.4.0 is an open-source text and code editor. Your files stay yours. This is an early preview; save important work regularly.`, [{ id: 'ok', label: 'Sounds good', style: 'primary' }], 'ABOUT WRYTROVE'); break;

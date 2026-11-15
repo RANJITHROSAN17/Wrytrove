@@ -747,6 +747,11 @@ export class Workbench {
     return this.roots.map((root) => root.folder.name);
   }
 
+  /** Native folders in the open workspace, for the Access leases panel. */
+  nativeFolders(): { path: string; name: string }[] {
+    return this.roots.flatMap((root) => root.folder.kind === 'native' ? [{ path: root.folder.path, name: root.folder.name }] : []);
+  }
+
   /** Whether a successfully saved tab belongs to an open folder and can change the note index. */
   async savedFileIsInOpenFolder(ref: FileRef | null): Promise<boolean> {
     if (!ref || ref.kind === 'download') return false;
