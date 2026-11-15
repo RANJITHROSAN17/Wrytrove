@@ -7,6 +7,7 @@ fn main() {
         "workspace_list_directory",
         "workspace_read_file",
         "workspace_create_entry",
+        "journal_key_load",
     ]);
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(manifest))
         .expect("failed to build the Tauri permission manifest");
