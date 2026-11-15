@@ -8,6 +8,8 @@ export interface Settings {
   theme: 'dark' | 'light';
   wrap: boolean;
   recovery: boolean;
+  /** AUD-03: seal recovery drafts with an OS-protected key. Off until a key provider exists. */
+  recoveryEncryption: boolean;
   fontSize: number;
   tabSize: 2 | 4 | 8;
   // Session-only consent. Never restore an old persisted true value.
@@ -38,7 +40,7 @@ export interface Settings {
 }
 
 export const defaults: Settings = {
-  theme: 'dark', wrap: false, recovery: true, fontSize: 14, tabSize: 4, aiEnabled: false,
+  theme: 'dark', wrap: false, recovery: true, recoveryEncryption: false, fontSize: 14, tabSize: 4, aiEnabled: false,
   model: DEFAULT_MODEL, sidebar: true, rememberRecent: false, recentFiles: [],
   fontFamily: 'editor', maxLineLength: 0, minimap: false, spellcheck: false, smart: false,
   focus: sanitizeFocus(null), goal: { target: 0, date: '' },
@@ -83,6 +85,7 @@ export function loadSettings(): LoadedSettings {
         theme: saved.theme === 'light' ? 'light' : 'dark',
         wrap: typeof saved.wrap === 'boolean' ? saved.wrap : defaults.wrap,
         recovery: typeof saved.recovery === 'boolean' ? saved.recovery : defaults.recovery,
+        recoveryEncryption: saved.recoveryEncryption === true,
         fontSize: typeof saved.fontSize === 'number' && Number.isFinite(saved.fontSize) ? Math.min(22, Math.max(11, saved.fontSize)) : defaults.fontSize,
         tabSize: saved.tabSize === 2 || saved.tabSize === 8 ? saved.tabSize : 4,
         // Old versions wrote this flag. Ignore it even if a failed write left true behind.
