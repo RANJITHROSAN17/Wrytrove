@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   MAX_DOCUMENT_DRAFT_BYTES, assembleJournalEntry, buildJournalEntry, chunkText, classifyDraft,
-  planGarbageCollection, type DraftInput, type JournalRecordSummary,
+  planGarbageCollection, nextJournalSequence, chooseRestoreText, type DraftInput, type JournalRecordSummary,
 } from '../src/recovery-journal';
 import { sha256 } from '../src/encoding';
 
@@ -108,5 +108,24 @@ describe('planGarbageCollection', () => {
     ];
     const doomed = planGarbageCollection(records, { perDocumentBytes: 1e9, totalBytes: 300 });
     expect(doomed).toEqual([rec('b', 1, 100, 60)]);
+  });
+});
+
+describe('restore helpers (AUD-02 integration)', () => {
+  it('advances sequences past the previous value even when the clock has not moved', () => {
+    expect(nextJournalSequence(-1, 1000)).toBe(1000);
+    expect(nextJournalSequence(1000, 1000)).toBe(1001);
+    expect(nextJournalSequence(1000, 5000)).toBe(5000);
+  });
+
+  it('rejects an invalid previous sequence', () => {
+    expect(() => nextJournalSequence(1.5, 0)).toThrow();
+    expect(() => nextJournalSequence(-2, 0)).toThrow();
+  });
+
+  it('restores the draft only when its text differs from the snapshot', () => {
+    expect(chooseRestoreText('same', null)).toBe('snapshot');
+    expect(chooseRestoreText('same', { text: 'same' })).toBe('snapshot');
+    expect(chooseRestoreText('old', { text: 'new' })).toBe('draft');
   });
 });

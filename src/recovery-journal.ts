@@ -215,3 +215,21 @@ export function planGarbageCollection(records: JournalRecordSummary[], limits: R
   }
   return deletions;
 }
+
+/**
+ * Next sequence for a document's draft. Sequences are wall-clock based, so a later launch always
+ * writes a larger sequence than an earlier one, even though the in-memory counter is reset.
+ */
+export function nextJournalSequence(previous: number, nowMs: number): number {
+  if (!Number.isSafeInteger(previous) || previous < -1) throw new Error('Previous sequence must be a safe integer of at least -1.');
+  return Math.max(previous + 1, Math.trunc(nowMs));
+}
+
+/**
+ * Choose the text to restore for a tab. The journal is written before the legacy snapshot, so a
+ * draft that differs from the snapshot is the newer text. An identical draft adds nothing.
+ */
+export function chooseRestoreText(snapshotText: string, draft: Pick<DraftInput, 'text'> | null): 'draft' | 'snapshot' {
+  if (!draft) return 'snapshot';
+  return draft.text === snapshotText ? 'snapshot' : 'draft';
+}

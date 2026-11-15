@@ -198,12 +198,14 @@ test('browser Save As recognizes different handles for the same file and retains
 
 test('startup prevents actions until asynchronous recovery has initialized the editor', async ({ page }) => {
   await page.addInitScript(() => {
-    const win = window as Window & { __releaseStartup?: () => void; __opened?: boolean };
+    type TestWindow = Window & { __releases?: Array<() => void>; __opened?: boolean };
+    const win = window as TestWindow;
+    win.__releases = [];
     const originalOpen = indexedDB.open.bind(indexedDB);
     Object.defineProperty(indexedDB, 'open', { value: (...args: Parameters<IDBFactory['open']>) => {
       const request = originalOpen(...args);
       Object.defineProperty(request, 'onsuccess', { configurable: true, set: (listener: (event: Event) => void) => {
-        request.addEventListener('success', (event) => { win.__releaseStartup = () => listener.call(request, event); }, { once: true });
+        request.addEventListener('success', (event) => { win.__releases?.push(() => listener.call(request, event)); }, { once: true });
       } });
       return request;
     } });
@@ -214,8 +216,12 @@ test('startup prevents actions until asynchronous recovery has initialized the e
   await expect(page.locator('#app')).toHaveAttribute('inert', '');
   await page.locator('[data-action="open"]').first().dispatchEvent('click');
   expect(await page.evaluate(() => (window as Window & { __opened?: boolean }).__opened)).toBeUndefined();
-  await expect.poll(() => page.evaluate(() => typeof (window as Window & { __releaseStartup?: () => void }).__releaseStartup)).toBe('function');
-  await page.evaluate(() => (window as Window & { __releaseStartup?: () => void }).__releaseStartup?.());
+  // Startup opens the snapshot database and then the draft journal, one after the other.
+  // Release each pending open in order until the editor is ready.
+  for (let released = 0; released < 2; released += 1) {
+    await expect.poll(() => page.evaluate(() => (window as Window & { __releases?: unknown[] }).__releases?.length ?? 0)).toBeGreaterThan(released);
+    await page.evaluate((index) => (window as Window & { __releases?: Array<() => void> }).__releases?.[index]?.(), released);
+  }
   await expect(page.locator('#app')).not.toHaveAttribute('inert', '');
   await expect(page.locator('#startup-status')).toBeHidden();
   await page.getByRole('button', { name: /Open a file/ }).click();

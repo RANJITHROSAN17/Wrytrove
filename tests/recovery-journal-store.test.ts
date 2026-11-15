@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildJournalEntry, CHUNK_CHARS, type DraftInput } from '../src/recovery-journal';
-import { commitDraft, deleteDraftsFor, JOURNAL_DB, readRecoveryDrafts } from '../src/recovery-journal-store';
+import { clearAllDrafts, commitDraft, deleteDraftsFor, JOURNAL_DB, readRecoveryDrafts } from '../src/recovery-journal-store';
 import { generateJournalKey, type JournalKeyRing } from '../src/recovery-crypto';
 
 const draft = (docId: string, sequence: number, text: string): DraftInput => ({
@@ -169,5 +169,14 @@ describe('draft journal store', () => {
       expect(await rawRows('manifests', id)).toHaveLength(0);
       expect((await readRecoveryDrafts(null)).locked).not.toContain(id);
     });
+  });
+
+  it('clears every draft when recovery is turned off', async () => {
+    await commitDraft(draft('clear-a', 1, 'a'));
+    await commitDraft(draft('clear-b', 1, 'b'));
+    await clearAllDrafts();
+    expect(await rawRows('manifests', 'clear-a')).toHaveLength(0);
+    expect(await rawRows('manifests', 'clear-b')).toHaveLength(0);
+    expect((await readRecoveryDrafts()).drafts.some((d) => d.docId.startsWith('clear-'))).toBe(false);
   });
 });

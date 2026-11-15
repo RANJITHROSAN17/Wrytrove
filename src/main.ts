@@ -13,6 +13,8 @@ import { checkNativeFileChange, chooseSaveTarget, desktop, ExternalChangeError, 
 import { complete, listModels, runAction, DEFAULT_MODEL } from './ai';
 import { MAX_ACTION_SELECTION, buildActionRequest, getAiAction, type AiActionId } from './ai-actions';
 import { hasPartialSessionMetadata, loadSession, loadSettings, saveSession, saveSettings, type SavedDocument, type Session, type Settings } from './storage';
+import { chooseRestoreText, nextJournalSequence, type DraftInput } from './recovery-journal';
+import { clearAllDrafts, commitDraft, deleteDraftsFor, readRecoveryDrafts } from './recovery-journal-store';
 import { MARKDOWN_SAMPLE, PYTHON_SAMPLE } from './samples';
 import { icon } from './icons';
 import { makeReviewTarget, reviewTargetIsCurrent, type ReviewTarget } from './change-review';
@@ -39,6 +41,8 @@ const el = <T extends keyof HTMLElementTagNameMap>(tag: T, className = ''): HTML
   const element = document.createElement(tag); if (className) element.className = className; return element;
 };
 const uuid = () => crypto.randomUUID();
+/** Identifies the exact text and file format a draft holds, so unchanged tabs are not rewritten. */
+const journalKeyOf = (text: string, encoding: TextEncoding, lineEnding: LineEnding): string => [text, encoding, lineEnding].join('\u0000');
 /** Coalesce rapid saves before rebuilding the folder index off the keystroke path. */
 const NOTE_INDEX_REFRESH_DELAY_MS = 300;
 
@@ -59,6 +63,10 @@ interface Doc {
   sample: boolean;
   saving: boolean;
   revision: number;
+  /** AUD-02: sequence of the last draft written for this tab; -1 before any write. */
+  journalSeq: number;
+  /** Text, encoding and line ending last written to the draft journal; null when no draft exists. */
+  journalKey: string | null;
 }
 interface ConfirmButton { id: string; label: string; style?: 'primary' | 'danger'; }
 
@@ -81,6 +89,7 @@ class WrytroveApp {
   private recoveryQuotaExceeded = false;
   private recoveryMetadataSaved = false;
   private partialRecovery = false;
+  private journaledIds = new Set<string>();
   private diskChecks = new Map<string, 'changed' | 'unavailable'>();
   private diskCheckSerial = 0;
   private toastTimer = 0;
@@ -158,10 +167,27 @@ class WrytroveApp {
         // Do not overwrite either record with the older restored session.
         this.partialRecovery = await hasPartialSessionMetadata();
         if (this.partialRecovery) { this.recoveryBlocked = true; this.recoveryFailed = true; }
-        if (session?.documents.length) {
-          // Do not silently drop tabs from large saved sessions.
-          for (const saved of session.documents) this.docs.push(this.restoreDoc(saved));
-          if (this.docs.length) { this.activeId = this.docs.some((doc) => doc.id === session.activeId) ? session.activeId : this.docs[0].id; restored = true; }
+        // Read every draft before creating any tab, so an unreadable journal cannot leave half-restored tabs.
+        const journal = await readRecoveryDrafts(null);
+        // Sealed drafts need a key that is not loaded. Never replace them with older text.
+        if (journal.locked.length) throw new Error('Recovery drafts are sealed with a key that is not loaded.');
+        if (journal.skipped) this.toast(`${journal.skipped} recovery draft(s) could not be verified and were skipped.`);
+        const drafts = new Map(journal.drafts.map((draft) => [draft.docId, draft]));
+        const snapshotIds = new Set(session?.documents.map((doc) => doc.id) ?? []);
+        // Do not silently drop tabs from large saved sessions.
+        for (const saved of session?.documents ?? []) this.docs.push(this.restoreDoc(this.applyDraft(saved, drafts.get(saved.id) ?? null)));
+        // A draft without a snapshot tab becomes a recovered tab rather than being dropped.
+        for (const draft of drafts.values()) if (!snapshotIds.has(draft.docId)) this.docs.push(this.recoveredDoc(draft));
+        for (const doc of this.docs) {
+          const draft = drafts.get(doc.id);
+          if (!draft) continue;
+          doc.journalSeq = draft.sequence;
+          doc.journalKey = journalKeyOf(draft.text, draft.encoding, draft.lineEnding);
+          this.journaledIds.add(doc.id);
+        }
+        if (this.docs.length) {
+          this.activeId = session && this.docs.some((doc) => doc.id === session.activeId) ? session.activeId : this.docs[0].id;
+          restored = true;
         }
       } catch {
         // Never overwrite an unreadable or incompatible snapshot with the example session.
@@ -172,6 +198,7 @@ class WrytroveApp {
       // A previous deletion could have failed. Retry only when an explicit off setting was readable.
       const result = await saveSession(null);
       if (!result.saved) this.recoveryCleanupFailed = true;
+      try { await clearAllDrafts(); } catch { this.recoveryCleanupFailed = true; }
     }
     if (!restored) {
       // Examples are real editable buffers, clearly labelled and never silently saved to disk.
@@ -209,6 +236,7 @@ class WrytroveApp {
       lineEnding, savedLineEnding: options.savedLineEnding || lineEnding,
       mixedLineEndings: !!options.mixed, hash: options.hash || null,
       override: options.override || null, sample: !!options.sample, saving: false, revision: 0,
+      journalSeq: -1, journalKey: null,
     };
   }
 
@@ -300,11 +328,73 @@ class WrytroveApp {
     window.clearTimeout(this.recoveryTimer);
     this.recoveryTimer = window.setTimeout(() => { void this.flushRecovery(); }, 1200);
   }
+  /** Text of a tab's restored draft is applied only when it differs from the saved snapshot. */
+  private applyDraft(saved: SavedDocument, draft: DraftInput | null): SavedDocument {
+    if (!draft || chooseRestoreText(saved.text, draft) === 'snapshot') return saved;
+    // The saved baseline stays the file content; only the working text comes from the newer draft.
+    return {
+      ...saved, text: draft.text, savedText: saved.savedText ?? saved.text, selection: draft.cursor,
+      encoding: draft.encoding, lineEnding: draft.lineEnding, hash: draft.baseHash ?? saved.hash,
+    };
+  }
+
+  /** A draft whose tab snapshot is missing. It is kept as an unsaved tab, never dropped. */
+  private recoveredDoc(draft: DraftInput): Doc {
+    return this.makeDoc('Recovered draft.txt', draft.text, {
+      id: draft.docId, encoding: draft.encoding, lineEnding: draft.lineEnding, cursor: draft.cursor, savedText: '',
+    });
+  }
+
+  /**
+   * Write drafts for changed tabs and remove drafts for tabs that are closed or clean.
+   * Each write is atomic in the journal, so a failure keeps the last complete draft.
+   */
+  private async writeJournal(): Promise<{ saved: boolean; quotaExceeded: boolean }> {
+    const open = new Set(this.docs.map((doc) => doc.id));
+    for (const id of [...this.journaledIds]) {
+      if (open.has(id)) continue;
+      await deleteDraftsFor(id);
+      this.journaledIds.delete(id);
+    }
+    for (const doc of this.docs) {
+      if (!this.dirty(doc)) {
+        if (doc.journalKey !== null) {
+          await deleteDraftsFor(doc.id);
+          doc.journalKey = null;
+          this.journaledIds.delete(doc.id);
+        }
+        continue;
+      }
+      const text = doc.state.doc.toString();
+      const key = journalKeyOf(text, doc.encoding, doc.lineEnding);
+      if (doc.journalKey === key) continue;
+      const sequence = nextJournalSequence(doc.journalSeq, Date.now());
+      const result = await commitDraft({
+        docId: doc.id, pathToken: null, baseHash: doc.hash, sequence, timestamp: Date.now(),
+        encoding: doc.encoding, lineEnding: doc.lineEnding, cursor: doc.state.selection.main.head, text,
+      });
+      if (!result.saved) return { saved: false, quotaExceeded: result.quotaExceeded };
+      doc.journalSeq = sequence;
+      doc.journalKey = key;
+      this.journaledIds.add(doc.id);
+    }
+    return { saved: true, quotaExceeded: false };
+  }
+
   private async flushRecovery(): Promise<boolean> {
     if (!this.settings.recovery || !this.view) return true;
     if (this.recoveryBlocked) return false;
     window.clearTimeout(this.recoveryTimer);
     try {
+      // The journal goes first. The snapshot is written only after the drafts it describes are stored,
+      // so the journal is never older than the snapshot it is compared against on restore.
+      const journal = await this.writeJournal();
+      if (!journal.saved) {
+        if (!this.recoveryFailed) this.toast('Could not save a recovery draft. Save your work to a file.');
+        this.recoveryFailed = true; this.recoveryQuotaExceeded = journal.quotaExceeded; this.recoveryMetadataSaved = false;
+        this.renderRecoveryStatus(); this.renderStorageWarning();
+        return false;
+      }
       const result = await saveSession(this.snapshot());
       if (!result.saved && !this.recoveryFailed) this.toast('Could not save a local recovery copy. Save your work to a file.');
       this.recoveryFailed = !result.saved;
