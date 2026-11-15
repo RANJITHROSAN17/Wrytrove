@@ -13,8 +13,9 @@ import { checkNativeFileChange, chooseSaveTarget, desktop, ExternalChangeError, 
 import { complete, listModels, runAction, DEFAULT_MODEL } from './ai';
 import { MAX_ACTION_SELECTION, buildActionRequest, getAiAction, type AiActionId } from './ai-actions';
 import { hasPartialSessionMetadata, loadSession, loadSettings, saveSession, saveSettings, type SavedDocument, type Session, type Settings } from './storage';
-import { chooseRestoreText, nextJournalSequence, type DraftInput } from './recovery-journal';
+import { chooseRestoreText, classifyDraft, nextJournalSequence, type DraftInput, type RecoveryRelation } from './recovery-journal';
 import { clearAllDrafts, commitDraft, deleteDraftsFor, readRecoveryDrafts } from './recovery-journal-store';
+import { decideRestore, planRecoveryReview } from './recovery-review';
 import { MARKDOWN_SAMPLE, PYTHON_SAMPLE } from './samples';
 import { icon } from './icons';
 import { makeReviewTarget, reviewTargetIsCurrent, type ReviewTarget } from './change-review';
@@ -91,6 +92,8 @@ class WrytroveApp {
   private partialRecovery = false;
   private journaledIds = new Set<string>();
   private diskChecks = new Map<string, 'changed' | 'unavailable'>();
+  /** Tabs whose recovered draft conflicts with the file on disk. The draft is kept until the user resolves it. */
+  private pendingReview = new Map<string, { draft: DraftInput; relation: RecoveryRelation }>();
   private diskCheckSerial = 0;
   private toastTimer = 0;
   private aiTimer = 0;
@@ -175,7 +178,15 @@ class WrytroveApp {
         const drafts = new Map(journal.drafts.map((draft) => [draft.docId, draft]));
         const snapshotIds = new Set(session?.documents.map((doc) => doc.id) ?? []);
         // Do not silently drop tabs from large saved sessions.
-        for (const saved of session?.documents ?? []) this.docs.push(this.restoreDoc(this.applyDraft(saved, drafts.get(saved.id) ?? null)));
+        const relations = await this.draftRelations(session?.documents ?? [], drafts);
+        for (const saved of session?.documents ?? []) {
+          const draft = drafts.get(saved.id) ?? null;
+          const relation = relations.get(saved.id) ?? null;
+          const decision = decideRestore(!!draft, !!draft && chooseRestoreText(saved.text, draft) === 'draft', relation);
+          // A draft that conflicts with the file on disk never replaces the text; it waits for the user.
+          if (decision === 'review' && draft) this.pendingReview.set(saved.id, { draft, relation: relation ?? 'disk-newer' });
+          this.docs.push(this.restoreDoc(decision === 'draft' ? this.applyDraft(saved, draft) : saved));
+        }
         // A draft without a snapshot tab becomes a recovered tab rather than being dropped.
         for (const draft of drafts.values()) if (!snapshotIds.has(draft.docId)) this.docs.push(this.recoveredDoc(draft));
         for (const doc of this.docs) {
@@ -328,6 +339,24 @@ class WrytroveApp {
     window.clearTimeout(this.recoveryTimer);
     this.recoveryTimer = window.setTimeout(() => { void this.flushRecovery(); }, 1200);
   }
+  /** Compares each restored draft with the file on disk. Unreadable files count as changed, so they go to review. */
+  private async draftRelations(documents: SavedDocument[], drafts: Map<string, DraftInput>): Promise<Map<string, RecoveryRelation>> {
+    const relations = new Map<string, RecoveryRelation>();
+    for (const saved of documents) {
+      const draft = drafts.get(saved.id);
+      if (!draft || !saved.path || !desktop || chooseRestoreText(saved.text, draft) === 'snapshot') continue;
+      try {
+        const contentHash = await sha256(encodeFile(draft.text, draft.encoding, draft.lineEnding));
+        let diskHash: string | null = null;
+        try { diskHash = await sha256((await readNative(saved.path)).bytes); } catch { diskHash = null; }
+        relations.set(saved.id, classifyDraft({ baseHash: draft.baseHash, contentHash }, diskHash));
+      } catch {
+        relations.set(saved.id, 'disk-newer');
+      }
+    }
+    return relations;
+  }
+
   /** Text of a tab's restored draft is applied only when it differs from the saved snapshot. */
   private applyDraft(saved: SavedDocument, draft: DraftInput | null): SavedDocument {
     if (!draft || chooseRestoreText(saved.text, draft) === 'snapshot') return saved;
@@ -357,6 +386,8 @@ class WrytroveApp {
       this.journaledIds.delete(id);
     }
     for (const doc of this.docs) {
+      // A draft under review is kept until the user resolves it, even though the tab text matches the snapshot.
+      if (this.pendingReview.has(doc.id)) continue;
       if (!this.dirty(doc)) {
         if (doc.journalKey !== null) {
           await deleteDraftsFor(doc.id);
@@ -704,6 +735,14 @@ class WrytroveApp {
 
   private async confirmClose(doc: Doc): Promise<boolean> {
     if (doc.saving) { this.toast('Wait for the file to finish saving.'); return false; }
+    if (this.pendingReview.has(doc.id)) {
+      const choice = await this.confirm('Discard the recovered draft?', `“${doc.name}” changed on disk after your unsaved draft. Closing keeps the file version and discards the draft.`, [
+        { id: 'cancel', label: 'Cancel' }, { id: 'discard', label: 'Discard draft', style: 'danger' },
+      ]);
+      if (choice !== 'discard') return false;
+      this.pendingReview.delete(doc.id);
+      return true;
+    }
     if (!this.dirty(doc)) return true;
     const choice = await this.confirm('Save your changes?', `“${doc.name}” has unsaved changes. Save them before closing this tab?`, [
       { id: 'cancel', label: 'Cancel' }, { id: 'discard', label: 'Don’t save', style: 'danger' }, { id: 'save', label: 'Save changes', style: 'primary' },
@@ -1526,9 +1565,62 @@ class WrytroveApp {
     retry.disabled = this.recoveryOperationBusy;
   }
 
+  /** Shows the review banner for the first held draft whose tab is still open. */
+  private renderDraftReview(): void {
+    const banner = $('#draft-review');
+    const entry = [...this.pendingReview.entries()].find(([id]) => this.docs.some((doc) => doc.id === id));
+    banner.hidden = !entry;
+    if (!entry) return;
+    const [id, { relation }] = entry;
+    const doc = this.docs.find((item) => item.id === id);
+    if (!doc) return;
+    const plan = planRecoveryReview(relation);
+    $('#draft-review-message').textContent = `${plan.title}: “${doc.name}”. ${plan.message}`;
+  }
+
+  /** Opens the held draft as a new unsaved tab. The original tab keeps the file version. */
+  private async compareDraft(id: string): Promise<void> {
+    const held = this.pendingReview.get(id);
+    const doc = this.docs.find((item) => item.id === id);
+    if (!held || !doc) return;
+    const copy = this.makeDoc(`${doc.name} (draft)`, held.draft.text, {
+      encoding: held.draft.encoding, lineEnding: held.draft.lineEnding, cursor: held.draft.cursor, savedText: '',
+    });
+    this.docs.push(copy);
+    // Journal the copy first, while the original draft is still held, so no crash window loses the text.
+    const result = await this.writeJournal();
+    if (!result.saved) {
+      this.toast('Could not save the draft copy. The recovered draft is still kept; try again.');
+      this.renderAll();
+      return;
+    }
+    this.pendingReview.delete(id);
+    await deleteDraftsFor(id);
+    this.journaledIds.delete(id);
+    doc.journalKey = null;
+    this.switchDoc(copy.id);
+    this.renderAll();
+    this.toast(`Opened the recovered draft as “${copy.name}”.`);
+  }
+
+  /** Keeps the file version and discards the held draft, after an explicit confirmation. */
+  private async keepFileVersion(id: string): Promise<void> {
+    const doc = this.docs.find((item) => item.id === id);
+    if (!this.pendingReview.has(id) || !doc) return;
+    const choice = await this.confirm('Keep the file version?', `The recovered draft for “${doc.name}” will be discarded. The file on disk is not changed.`, [
+      { id: 'cancel', label: 'Cancel' }, { id: 'discard', label: 'Discard draft', style: 'danger' },
+    ]);
+    if (choice !== 'discard') return;
+    this.pendingReview.delete(id);
+    await deleteDraftsFor(id);
+    this.journaledIds.delete(id);
+    doc.journalKey = null;
+    this.renderAll();
+  }
+
   private renderAll(): void {
     if (!this.view) return;
-    this.renderFiles(); this.renderDiskChange(); this.updateStatus(); this.renderRecoveryStatus(); this.renderStorageWarning(); this.renderAiStatus(); this.updateMarkdownPreview();
+    this.renderFiles(); this.renderDiskChange(); this.renderDraftReview(); this.updateStatus(); this.renderRecoveryStatus(); this.renderStorageWarning(); this.renderAiStatus(); this.updateMarkdownPreview();
     this.refreshStats();
   }
 
@@ -1983,6 +2075,14 @@ class WrytroveApp {
     $('#setting-recovery').addEventListener('click', () => { void this.toggleRecovery(); });
     $('#retry-recovery-cleanup').addEventListener('click', () => { void this.retryRecoveryCleanup(); });
     $('#disk-change-reload').addEventListener('click', () => { void this.reloadActiveFromDisk(); });
+    $('#draft-review-compare').addEventListener('click', () => {
+      const entry = [...this.pendingReview.keys()].find((id) => this.docs.some((doc) => doc.id === id));
+      if (entry) void this.compareDraft(entry);
+    });
+    $('#draft-review-keep').addEventListener('click', () => {
+      const entry = [...this.pendingReview.keys()].find((id) => this.docs.some((doc) => doc.id === id));
+      if (entry) void this.keepFileVersion(entry);
+    });
     window.addEventListener('focus', () => { void this.checkActiveDisk(); });
     $('#capture-submit').addEventListener('click', () => { void this.submitCapture(); });
     $<HTMLTextAreaElement>('#capture-text').addEventListener('keydown', (event) => {

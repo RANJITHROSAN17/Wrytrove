@@ -37,3 +37,23 @@ describe('recovery review plan', () => {
     }
   });
 });
+
+import { decideRestore } from '../src/recovery-review';
+
+describe('startup restore decision', () => {
+  it('keeps the snapshot when there is no draft or the text is the same', () => {
+    expect(decideRestore(false, true, 'draft-newer')).toBe('snapshot');
+    expect(decideRestore(true, false, 'draft-newer')).toBe('snapshot');
+  });
+
+  it('never applies a draft whose file changed on disk; it goes to review', () => {
+    expect(decideRestore(true, true, 'disk-newer')).toBe('review');
+    expect(decideRestore(true, true, null)).toBe('draft');
+  });
+
+  it('applies the draft when it is newer, unsaved, or identical to the file', () => {
+    expect(decideRestore(true, true, 'draft-newer')).toBe('draft');
+    expect(decideRestore(true, true, 'unsaved')).toBe('draft');
+    expect(decideRestore(true, true, 'equal-hash')).toBe('draft');
+  });
+});

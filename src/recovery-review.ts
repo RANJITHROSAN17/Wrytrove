@@ -52,3 +52,16 @@ export function planRecoveryReview(relation: RecoveryRelation): ReviewPlan {
       };
   }
 }
+
+export type RestoreDecision = 'snapshot' | 'draft' | 'review';
+
+/**
+ * Startup decision for one saved tab. 'review' means the draft must not replace the text: the
+ * file changed on disk after the draft was made, so the snapshot stays visible and the draft is
+ * kept until the user resolves it.
+ */
+export function decideRestore(hasDraft: boolean, draftTextDiffers: boolean, relation: RecoveryRelation | null): RestoreDecision {
+  if (!hasDraft || !draftTextDiffers) return 'snapshot';
+  if (relation === 'disk-newer') return 'review';
+  return 'draft';
+}
