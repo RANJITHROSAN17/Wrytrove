@@ -49,10 +49,16 @@ describe('tagged release guard', () => {
   it('fails closed for signing configuration and verifies publisher identity', () => {
     expect(workflow).toContain('MORROW_SIGNING_REQUIRED');
     expect(workflow).toContain('id: signing_mode');
-    expect(workflow).toContain('MORROW_SIGNING_CERTIFICATE');
-    expect(workflow).toContain('signtool.exe');
-    expect(workflow).toContain('/tr $env:MORROW_TIMESTAMP_URL');
-    expect(workflow).toContain('/td SHA256');
+    expect(workflow).toContain('SSL_COM_USERNAME');
+    expect(workflow).toContain('SSL_COM_TOTP_SECRET');
+    expect(workflow).toContain('SSL_COM_CREDENTIAL_ID');
+    expect(workflow).toContain('CodeSignTool.bat');
+    expect(workflow).toContain('sign "-credential_id=');
+    expect(workflow).toContain('"-output_dir_path=$outDir"');
+    expect(workflow).toContain('Get-FileHash -Algorithm SHA256');
+    expect(workflow).toContain('SSL_COM_CODESIGNTOOL_SHA256');
+    expect(workflow).not.toContain('MORROW_SIGNING_CERTIFICATE_PASSWORD');
+    expect(workflow).not.toContain('signtool.exe');
     expect(workflow).toContain('Get-AuthenticodeSignature');
     expect(workflow).toContain('MORROW_SIGNING_CERTIFICATE_THUMBPRINT');
     expect(workflow).toContain("$signature.Status -ne 'Valid'");

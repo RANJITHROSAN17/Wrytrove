@@ -71,51 +71,72 @@ jobs:
         id: signing_mode
         shell: pwsh
         env:
-          MORROW_SIGNING_CERTIFICATE: ${{ secrets.MORROW_SIGNING_CERTIFICATE }}
+          SSL_COM_USERNAME: ${{ secrets.SSL_COM_USERNAME }}
+          SSL_COM_PASSWORD: ${{ secrets.SSL_COM_PASSWORD }}
+          SSL_COM_TOTP_SECRET: ${{ secrets.SSL_COM_TOTP_SECRET }}
+          SSL_COM_CREDENTIAL_ID: ${{ vars.SSL_COM_CREDENTIAL_ID }}
+          SSL_COM_CODESIGNTOOL_URL: ${{ vars.SSL_COM_CODESIGNTOOL_URL }}
+          SSL_COM_CODESIGNTOOL_SHA256: ${{ vars.SSL_COM_CODESIGNTOOL_SHA256 }}
           MORROW_SIGNING_CERTIFICATE_THUMBPRINT: ${{ vars.MORROW_SIGNING_CERTIFICATE_THUMBPRINT }}
           MORROW_SIGNING_REQUIRED: ${{ vars.MORROW_SIGNING_REQUIRED || 'false' }}
         run: |
-          $hasCertificate = -not [string]::IsNullOrWhiteSpace($env:MORROW_SIGNING_CERTIFICATE)
+          $hasAccount = -not [string]::IsNullOrWhiteSpace($env:SSL_COM_USERNAME) -and -not [string]::IsNullOrWhiteSpace($env:SSL_COM_PASSWORD)
           $hasThumbprint = -not [string]::IsNullOrWhiteSpace($env:MORROW_SIGNING_CERTIFICATE_THUMBPRINT)
-          if (($env:MORROW_SIGNING_REQUIRED -eq 'true' -or $hasThumbprint) -and -not $hasCertificate) { throw 'Tagged release signing is configured or required, but MORROW_SIGNING_CERTIFICATE is not available.' }
-          if ($hasCertificate) { 'configured=true' | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT } else { 'configured=false' | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT }
-      # NOTE: this step signs with an exported PFX. CA/Browser Forum rules since June 2023 require
-      # code-signing keys to stay in certified hardware or a cloud signing service, so a newly issued
-      # certificate cannot be exported to this PFX form. Replace this step with the chosen signing route
-      # (see docs/RELEASE-VERIFICATION.md) before the first signed tag.
+          if ($env:MORROW_SIGNING_REQUIRED -eq 'true' -and -not $hasAccount) { throw 'Tagged release signing is required, but the SSL.com eSigner account secrets are not available.' }
+          if ($hasThumbprint -and -not $hasAccount) { throw 'A publisher thumbprint is configured, but the SSL.com eSigner account secrets are not available.' }
+          if ($hasAccount) {
+            if (-not $hasThumbprint) { throw 'eSigner signing is configured but MORROW_SIGNING_CERTIFICATE_THUMBPRINT is missing.' }
+            if ([string]::IsNullOrWhiteSpace($env:SSL_COM_TOTP_SECRET)) { throw 'eSigner signing is configured but SSL_COM_TOTP_SECRET is missing.' }
+            if ([string]::IsNullOrWhiteSpace($env:SSL_COM_CREDENTIAL_ID)) { throw 'eSigner signing is configured but SSL_COM_CREDENTIAL_ID is missing.' }
+            if ($env:SSL_COM_CODESIGNTOOL_URL -notlike 'https://*') { throw 'eSigner signing is configured but SSL_COM_CODESIGNTOOL_URL is not an https URL.' }
+            if ($env:SSL_COM_CODESIGNTOOL_SHA256 -notmatch '^[0-9a-fA-F]{64}$') { throw 'eSigner signing is configured but SSL_COM_CODESIGNTOOL_SHA256 is not a SHA-256 value.' }
+            'configured=true' | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
+          } else {
+            'configured=false' | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
+          }
+      # Signing uses SSL.com eSigner through CodeSignTool. The private key stays in SSL.com's HSM, so
+      # no PFX is exported or stored here. The CodeSignTool archive is accepted only if its SHA-256
+      # matches the pinned repository variable, and the signed result is checked for publisher and timestamp.
       - name: Sign and verify the tagged installer
         if: ${{ startsWith(github.ref, 'refs/tags/v') && steps.signing_mode.outputs.configured == 'true' }}
         shell: pwsh
         env:
-          MORROW_SIGNING_CERTIFICATE: ${{ secrets.MORROW_SIGNING_CERTIFICATE }}
-          MORROW_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.MORROW_SIGNING_CERTIFICATE_PASSWORD }}
+          SSL_COM_USERNAME: ${{ secrets.SSL_COM_USERNAME }}
+          SSL_COM_PASSWORD: ${{ secrets.SSL_COM_PASSWORD }}
+          SSL_COM_TOTP_SECRET: ${{ secrets.SSL_COM_TOTP_SECRET }}
+          SSL_COM_CREDENTIAL_ID: ${{ vars.SSL_COM_CREDENTIAL_ID }}
+          SSL_COM_CODESIGNTOOL_URL: ${{ vars.SSL_COM_CODESIGNTOOL_URL }}
+          SSL_COM_CODESIGNTOOL_SHA256: ${{ vars.SSL_COM_CODESIGNTOOL_SHA256 }}
           MORROW_SIGNING_CERTIFICATE_THUMBPRINT: ${{ vars.MORROW_SIGNING_CERTIFICATE_THUMBPRINT }}
-          MORROW_TIMESTAMP_URL: ${{ vars.MORROW_TIMESTAMP_URL || 'https://timestamp.digicert.com' }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:MORROW_SIGNING_CERTIFICATE_PASSWORD)) { throw 'A signing certificate is configured but its password is missing.' }
-          if ([string]::IsNullOrWhiteSpace($env:MORROW_SIGNING_CERTIFICATE_THUMBPRINT)) { throw 'A signing certificate is configured but its expected thumbprint is missing.' }
+          $archive = Join-Path $env:RUNNER_TEMP 'codesigntool.zip'
+          Invoke-WebRequest -Uri $env:SSL_COM_CODESIGNTOOL_URL -OutFile $archive -UseBasicParsing
+          $actualArchiveHash = (Get-FileHash -Algorithm SHA256 -Path $archive).Hash
+          if ($actualArchiveHash -ne $env:SSL_COM_CODESIGNTOOL_SHA256.ToUpperInvariant()) { throw 'The CodeSignTool archive SHA-256 does not match SSL_COM_CODESIGNTOOL_SHA256.' }
+          $toolDir = Join-Path $env:RUNNER_TEMP 'codesigntool'
+          Expand-Archive -Path $archive -DestinationPath $toolDir -Force
+          $launcher = Get-ChildItem -Path $toolDir -Recurse -Filter 'CodeSignTool.bat' | Select-Object -First 1
+          if (-not $launcher) { throw 'CodeSignTool.bat was not found in the verified archive.' }
           $expectedThumbprint = ($env:MORROW_SIGNING_CERTIFICATE_THUMBPRINT -replace '\s', '').ToUpperInvariant()
-          $pfx = Join-Path $env:RUNNER_TEMP 'wrytrove-release-signing.pfx'
-          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:MORROW_SIGNING_CERTIFICATE))
-          $kits = ${env:ProgramFiles(x86)}
-          $signtool = Get-ChildItem "$kits\Windows Kits\10\bin\*\x64\signtool.exe" -ErrorAction SilentlyContinue | Sort-Object FullName | Select-Object -Last 1
-          if (-not $signtool) { throw 'Windows SDK signtool.exe was not found.' }
           $report = @()
           Get-ChildItem release -Filter '*-setup.exe' | ForEach-Object {
-            & $signtool.FullName sign /fd SHA256 /f $pfx /p $env:MORROW_SIGNING_CERTIFICATE_PASSWORD /tr $env:MORROW_TIMESTAMP_URL /td SHA256 /d 'Wrytrove' $_.FullName
-            if ($LASTEXITCODE -ne 0) { throw "signtool sign failed for $($_.Name)." }
-            & $signtool.FullName verify /pa /all $_.FullName
-            if ($LASTEXITCODE -ne 0) { throw "signtool verification failed for $($_.Name)." }
-            $signature = Get-AuthenticodeSignature $_.FullName
+            $outDir = Join-Path $env:RUNNER_TEMP ("signed-" + [guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+            & $launcher.FullName sign "-credential_id=$env:SSL_COM_CREDENTIAL_ID" "-username=$env:SSL_COM_USERNAME" "-password=$env:SSL_COM_PASSWORD" "-totp_secret=$env:SSL_COM_TOTP_SECRET" "-output_dir_path=$outDir" "-input_file_path=$($_.FullName)"
+            if ($LASTEXITCODE -ne 0) { throw "CodeSignTool sign failed for $($_.Name)." }
+            $signedFile = Join-Path $outDir $_.Name
+            if (-not (Test-Path $signedFile)) { throw "CodeSignTool did not produce a signed $($_.Name)." }
+            Copy-Item -Path $signedFile -Destination $_.FullName -Force
+            $signature = Get-AuthenticodeSignature -FilePath $_.FullName
             if ($signature.Status -ne 'Valid' -or -not $signature.SignerCertificate) { throw "Authenticode verification was not valid for $($_.Name)." }
             $actualThumbprint = ($signature.SignerCertificate.Thumbprint -replace '\s', '').ToUpperInvariant()
             if ($actualThumbprint -ne $expectedThumbprint) { throw "The signed publisher thumbprint for $($_.Name) does not match MORROW_SIGNING_CERTIFICATE_THUMBPRINT." }
             if (-not $signature.TimeStamperCertificate) { throw "The Authenticode signature for $($_.Name) has no trusted timestamp." }
             $report += "$($_.Name): Subject=$($signature.SignerCertificate.Subject); Thumbprint=$actualThumbprint; Timestamp=$($signature.TimeStamperCertificate.Subject)"
+            Remove-Item -Path $outDir -Recurse -Force
           }
           'signed' | Set-Content -Encoding utf8 release/SIGNING-MODE.txt
           $report | Set-Content -Encoding utf8 release/SIGNATURE-VERIFICATION.txt
-          Remove-Item $pfx -Force
       - name: Mark the explicit unsigned preview mode
         if: ${{ !startsWith(github.ref, 'refs/tags/v') || steps.signing_mode.outputs.configured != 'true' }}
         shell: pwsh
