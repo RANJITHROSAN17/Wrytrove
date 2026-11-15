@@ -4,6 +4,8 @@ use std::{fs, io::{Read, Write}, path::{Path, PathBuf}, sync::Mutex};
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_fs::FsExt;
 
+mod journal_key;
+
 const MAX_FILE_BYTES: usize = 20 * 1024 * 1024;
 const MAX_DIRECTORY_ENTRIES: usize = 2_000;
 
@@ -25,6 +27,15 @@ fn collect_launch_files(app: &tauri::AppHandle, args: Vec<String>, cwd: &str) {
         }
         let _ = app.emit("wrytrove-open-files", ());
     }
+}
+
+/// Returns the 32-byte recovery journal key (AUD-03). Locked or missing keys are reported with the
+/// KEY_UNAVAILABLE prefix; the webview must then pause recovery rather than replace data.
+#[tauri::command]
+async fn journal_key_load(app: tauri::AppHandle) -> Result<tauri::ipc::Response, String> {
+    let dir = app.path().app_data_dir().map_err(|err| format!("{}: {err}", journal_key::KEY_UNAVAILABLE))?;
+    tauri::async_runtime::spawn_blocking(move || journal_key::load_or_create_in(&dir).map(tauri::ipc::Response::new))
+        .await.map_err(|err| format!("Key task failed: {err}"))?
 }
 
 #[tauri::command]
@@ -394,7 +405,7 @@ pub fn run() {
             collect_launch_files(app.handle(), std::env::args().collect(), &cwd);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![safe_write, take_launch_files, workspace_list_directory, workspace_read_file, workspace_create_entry])
+        .invoke_handler(tauri::generate_handler![safe_write, take_launch_files, workspace_list_directory, workspace_read_file, workspace_create_entry, journal_key_load])
         .run(tauri::generate_context!())
         .expect("error while running Wrytrove");
 }
