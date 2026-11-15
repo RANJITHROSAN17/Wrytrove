@@ -55,6 +55,19 @@ jobs:
         run: |
           npm run test:e2e 2>&1 | Tee-Object -FilePath e2e-output.txt
           exit $LASTEXITCODE
+      - name: Report browser test failures as annotations
+        if: ${{ failure() }}
+        shell: pwsh
+        run: |
+          if (-not (Test-Path e2e-output.txt)) {
+            Write-Output '::error title=Browser tests::No Playwright output was captured.'
+            exit 0
+          }
+          $pattern = '^\s*\d+\)|Error|expect\(|Timeout|Expected|Received|failed'
+          Get-Content e2e-output.txt | Select-String -Pattern $pattern | Select-Object -First 30 | ForEach-Object {
+            $text = $_.Line.Trim() -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+            Write-Output ('::error title=Browser test failure::' + $text)
+          }
       - name: Upload browser test output on failure
         if: ${{ failure() }}
         uses: actions/upload-artifact@v7
