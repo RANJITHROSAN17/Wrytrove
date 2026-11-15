@@ -300,3 +300,13 @@ export function deleteDraftsFor(docId: string): Promise<void> {
     });
   });
 }
+
+/** Remove every draft, e.g. when the user turns recovery off. Needs no key. */
+export function clearAllDrafts(): Promise<void> {
+  return serial(async () => {
+    await writeAtomically([MANIFESTS, CHUNKS], (tx) => {
+      tx.objectStore(MANIFESTS).clear();
+      tx.objectStore(CHUNKS).clear();
+    });
+  });
+}

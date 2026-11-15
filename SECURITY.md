@@ -21,7 +21,7 @@ that does not exist.
 | `src/arena.ts` | the optional API-key panel: key handling, request validation, confirmation |
 | `src/sensitive-text.ts` | the credential-shape warning. Fallible by design — a *silent* miss is the bug, not an imperfect match |
 | `src/bounded-json.ts` | size/parse bounds on Ollama and provider responses |
-| Session recovery (`src/storage.ts`) | unencrypted local storage of document contents |
+| Session recovery (`src/storage.ts`) and draft journal (`src/recovery-journal-store.ts`) | unencrypted local storage of document contents and unsaved drafts |
 
 Out of scope: the unsigned installer triggering SmartScreen (documented, expected), anything
 requiring an already-compromised machine, and vulnerabilities in CodeMirror, Tauri or the model
@@ -35,7 +35,9 @@ This section exists because a security policy that overstates its coverage is wo
   the README repeats it next to the download.
 - **The command screen and secret warning are heuristics.** They are not sandboxes or redaction.
 - **Session recovery is unencrypted.** The README says it is "**not** a backup"; it is also not
-  private from anyone with access to your user profile.
+  private from anyone with access to your user profile. Unsaved text is kept in a local draft journal
+  as well as the session snapshot. Encryption of drafts exists in the code but is not yet enabled, because
+  no OS-protected key provider is wired in.
 - **Folder access can outlive the view.** Tauri's persisted scope may retain access after a
   folder is closed or the app restarts.
 - **Parent-path races remain.** Bounded no-follow reads reject direct links and reparse points;
