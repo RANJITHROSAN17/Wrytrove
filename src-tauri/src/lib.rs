@@ -4,6 +4,7 @@ use std::{fs, io::{Read, Write}, path::{Path, PathBuf}, sync::Mutex};
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_fs::FsExt;
 
+mod access_revocation;
 mod journal_key;
 
 const MAX_FILE_BYTES: usize = 20 * 1024 * 1024;
@@ -36,6 +37,44 @@ async fn journal_key_load(app: tauri::AppHandle) -> Result<tauri::ipc::Response,
     let dir = app.path().app_data_dir().map_err(|err| format!("{}: {err}", journal_key::KEY_UNAVAILABLE))?;
     tauri::async_runtime::spawn_blocking(move || journal_key::load_or_create_in(&dir).map(tauri::ipc::Response::new))
         .await.map_err(|err| format!("Key task failed: {err}"))?
+}
+
+fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    app.path().app_data_dir().map_err(|err| format!("Cannot locate the app data folder: {err}"))
+}
+
+/// Refuses native access under a folder whose access was revoked (AUD-03).
+fn check_not_revoked(app: &tauri::AppHandle, path: &Path) -> Result<(), String> {
+    access_revocation::ensure_access(&data_dir(app)?, path)
+}
+
+/// Revokes access to a folder. Callers must not revoke a folder that an open document still uses;
+/// the Access leases panel defers that case until the document closes.
+#[tauri::command]
+async fn access_revoke(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let path = PathBuf::from(path);
+    if !path.is_absolute() || path.components().any(|part| matches!(part, std::path::Component::ParentDir)) {
+        return Err("Invalid folder path.".into());
+    }
+    let dir = data_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || access_revocation::revoke(&dir, &path.to_string_lossy()))
+        .await.map_err(|err| format!("Access task failed: {err}"))?
+}
+
+/// Restores access to a folder after the user reopens it.
+#[tauri::command]
+async fn access_restore(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let dir = data_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || access_revocation::restore(&dir, &path))
+        .await.map_err(|err| format!("Access task failed: {err}"))?
+}
+
+/// Folders whose access is currently revoked.
+#[tauri::command]
+async fn access_revoked_list(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    let dir = data_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || access_revocation::list(&dir))
+        .await.map_err(|err| format!("Access task failed: {err}"))?
 }
 
 #[tauri::command]
@@ -179,6 +218,7 @@ async fn safe_write(app: tauri::AppHandle, request: tauri::ipc::Request<'_>) -> 
     parse_expected(&expected)?;
     let force = parse_force(&header("x-wrytrove-force")?)?;
     if !app.fs_scope().is_allowed(&path) { return Err("This file has not been selected for access in Wrytrove.".into()); }
+    check_not_revoked(&app, &path)?;
     tauri::async_runtime::spawn_blocking(move || atomic_write(&path, &data, &expected, force))
         .await.map_err(|err| format!("Save task failed: {err}"))?
 }
@@ -252,6 +292,7 @@ fn bounded_read(path: &Path, max_bytes: usize) -> Result<Vec<u8>, String> {
 async fn workspace_list_directory(app: tauri::AppHandle, path: String) -> Result<serde_json::Value, String> {
     let path = PathBuf::from(path);
     if !app.fs_scope().is_allowed(&path) { return Err("This folder has not been selected for access in Wrytrove.".into()); }
+    check_not_revoked(&app, &path)?;
     tauri::async_runtime::spawn_blocking(move || bounded_directory(&path)).await.map_err(|err| format!("Folder task failed: {err}"))?
 }
 
@@ -262,6 +303,7 @@ async fn workspace_read_file(app: tauri::AppHandle, path: String, max_bytes: usi
         return Err("Invalid file path.".into());
     }
     if !app.fs_scope().is_allowed(&path) { return Err("This file has not been selected for access in Wrytrove.".into()); }
+    check_not_revoked(&app, &path)?;
     let bytes = tauri::async_runtime::spawn_blocking(move || bounded_read(&path, max_bytes)).await.map_err(|err| format!("File task failed: {err}"))??;
     Ok(tauri::ipc::Response::new(bytes))
 }
@@ -325,10 +367,13 @@ fn create_workspace_child(root: &Path, relative: &str, name: &str, kind: &str) -
 async fn workspace_create_entry(app: tauri::AppHandle, root: String, parent_relative: String, name: String, kind: String) -> Result<(), String> {
     let root = PathBuf::from(root);
     if !app.fs_scope().is_allowed(&root) { return Err("This folder has not been selected for access in Wrytrove.".into()); }
+    check_not_revoked(&app, &root)?;
+    let revocation_dir = data_dir(&app)?;
     // Scope check is on both the selected root and its verified descendant.
     tauri::async_runtime::spawn_blocking(move || {
         let parent = checked_workspace_parent(&root, &parent_relative)?;
         if !app.fs_scope().is_allowed(&parent) { return Err("This target folder is outside the selected file-access scope.".into()); }
+        access_revocation::ensure_access(&revocation_dir, &parent)?;
         create_workspace_child(&root, &parent_relative, &name, &kind)
     }).await.map_err(|err| format!("Create task failed: {err}"))?
 }
@@ -405,7 +450,7 @@ pub fn run() {
             collect_launch_files(app.handle(), std::env::args().collect(), &cwd);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![safe_write, take_launch_files, workspace_list_directory, workspace_read_file, workspace_create_entry, journal_key_load])
+        .invoke_handler(tauri::generate_handler![safe_write, take_launch_files, workspace_list_directory, workspace_read_file, workspace_create_entry, journal_key_load, access_revoke, access_restore, access_revoked_list])
         .run(tauri::generate_context!())
         .expect("error while running Wrytrove");
 }
