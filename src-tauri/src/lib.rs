@@ -61,6 +61,44 @@ fn parse_force(value: &str) -> Result<bool, String> {
 }
 
 fn atomic_write(path: &Path, data: &[u8], expected: &str, force: bool) -> Result<(), String> {
+    atomic_write_with_hook(path, data, expected, force, || {})
+}
+
+/// Verifies the destination still matches `expected`. Used before writing and again just before the
+/// rename, so a change during the write is caught. The check cannot be atomic with the rename, so a
+/// change in the last instant is still possible; this narrows the window rather than closing it.
+fn verify_expected(path: &Path, expected: ExpectedVersion<'_>) -> Result<(), String> {
+    let ExpectedVersion::Hash(hash) = expected else { return Ok(()) };
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Err("WRYTROVE_FILE_CHANGED: file no longer exists".into()),
+        Err(err) => return Err(format!("Cannot inspect destination: {err}")),
+    };
+    if is_link_or_reparse(&meta) { return Err("WRYTROVE_FILE_CHANGED: destination is now a link or reparse point".into()); }
+    if !meta.is_file() { return Err("WRYTROVE_FILE_CHANGED: destination is no longer a regular file".into()); }
+    if meta.len() > MAX_FILE_BYTES as u64 { return Err("WRYTROVE_FILE_CHANGED: the file grew beyond the safety limit".into()); }
+    // Bounded and no-follow read, including if the file grows after stat.
+    let bytes = bounded_read(path, MAX_FILE_BYTES)
+        .map_err(|_| "WRYTROVE_FILE_CHANGED: cannot verify the file on disk".to_string())?;
+    if sha256_hex(&bytes) != hash { return Err("WRYTROVE_FILE_CHANGED: file differs from the version you opened".into()); }
+    Ok(())
+}
+
+/// Flushes the parent directory so the rename is durable. Best effort: the file is already committed
+/// when this runs, so a failure here is not reported as a failed save.
+#[cfg(unix)]
+fn sync_parent_directory(parent: &Path) {
+    if let Ok(dir) = fs::File::open(parent) { let _ = dir.sync_all(); }
+}
+
+/// Windows does not allow flushing a directory handle this way, so the rename is not separately
+/// flushed there. This limitation is documented in the audit and must not be presented as durable.
+#[cfg(not(unix))]
+fn sync_parent_directory(_parent: &Path) {}
+
+/// `before_commit` runs after the temporary file is flushed and before the destination is revalidated.
+/// Tests use it to change the destination at the point where a race would matter.
+fn atomic_write_with_hook(path: &Path, data: &[u8], expected: &str, force: bool, before_commit: impl FnOnce()) -> Result<(), String> {
     let expected = parse_expected(expected)?;
     if data.len() > MAX_FILE_BYTES { return Err("This file exceeds the 20 MiB safety limit.".into()); }
     let metadata = match fs::symlink_metadata(path) {
@@ -77,16 +115,9 @@ fn atomic_write(path: &Path, data: &[u8], expected: &str, force: bool) -> Result
         match expected {
             ExpectedVersion::Absent if metadata.is_some() => return Err("WRYTROVE_FILE_CHANGED: destination already exists".into()),
             ExpectedVersion::Absent => {},
-            ExpectedVersion::Hash(hash) => {
+            ExpectedVersion::Hash(_) => {
                 if metadata.is_none() { return Err("WRYTROVE_FILE_CHANGED: file no longer exists".into()); }
-                if metadata.as_ref().is_some_and(|meta| meta.len() > MAX_FILE_BYTES as u64) {
-                    return Err("WRYTROVE_FILE_CHANGED: the file grew beyond the safety limit".into());
-                }
-                // Bounded and no-follow read, including if the file grows after stat.
-                let bytes = bounded_read(path, MAX_FILE_BYTES)
-                    .map_err(|_| "WRYTROVE_FILE_CHANGED: cannot verify the file on disk".to_string())?;
-                let current = sha256_hex(&bytes);
-                if current != hash { return Err("WRYTROVE_FILE_CHANGED: file differs from the version you opened".into()); }
+                verify_expected(path, expected)?;
             }
         }
     }
@@ -98,6 +129,11 @@ fn atomic_write(path: &Path, data: &[u8], expected: &str, force: bool) -> Result
     if let Some(meta) = metadata {
         temporary.as_file().set_permissions(meta.permissions()).map_err(|err| format!("Cannot preserve file permissions: {err}"))?;
     }
+    before_commit();
+    if !force && matches!(expected, ExpectedVersion::Hash(_)) {
+        // The temporary file is dropped on error, so a failed check leaves the destination untouched.
+        verify_expected(path, expected)?;
+    }
     if !force && expected == ExpectedVersion::Absent {
         // Also refuse to overwrite a file created after the first existence check.
         temporary.persist_noclobber(path).map_err(|err| {
@@ -105,10 +141,9 @@ fn atomic_write(path: &Path, data: &[u8], expected: &str, force: bool) -> Result
             else { format!("Cannot create the selected file: {}", err.error) }
         })?;
     } else {
-        // Existing-file conflict detection is best-effort: another process can
-        // still race between the check and replacement. It is not a file lock.
         temporary.persist(path).map_err(|err| format!("Cannot replace the original file: {}", err.error))?;
     }
+    sync_parent_directory(parent);
     Ok(())
 }
 
@@ -429,6 +464,44 @@ mod tests {
         assert!(atomic_write(&path, b"new", &old_hash, false).unwrap_err().contains("WRYTROVE_FILE_CHANGED"));
         assert_eq!(fs::read(&path).unwrap(), b"changed by another app");
         atomic_write(&path, b"new", &old_hash, true).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new");
+    }
+    #[test]
+    fn save_aborts_when_destination_changes_before_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file.txt");
+        fs::write(&path, b"original").unwrap();
+        let old_hash = sha256_hex(b"original");
+        let target = path.clone();
+        let result = atomic_write_with_hook(&path, b"new", &old_hash, false, move || {
+            fs::write(&target, b"changed during save").unwrap();
+        });
+        assert!(result.unwrap_err().contains("WRYTROVE_FILE_CHANGED"));
+        assert_eq!(fs::read(&path).unwrap(), b"changed during save");
+        let leftovers: Vec<_> = fs::read_dir(dir.path()).unwrap().filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".wrytrove-")).collect();
+        assert!(leftovers.is_empty(), "temporary file was left behind");
+    }
+    #[test]
+    fn save_aborts_when_destination_is_deleted_before_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file.txt");
+        fs::write(&path, b"original").unwrap();
+        let old_hash = sha256_hex(b"original");
+        let target = path.clone();
+        let result = atomic_write_with_hook(&path, b"new", &old_hash, false, move || {
+            fs::remove_file(&target).unwrap();
+        });
+        assert!(result.unwrap_err().contains("file no longer exists"));
+        assert!(!path.exists(), "a deleted destination must not be recreated silently");
+    }
+    #[test]
+    fn save_succeeds_when_destination_is_unchanged_before_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file.txt");
+        fs::write(&path, b"original").unwrap();
+        let old_hash = sha256_hex(b"original");
+        atomic_write_with_hook(&path, b"new", &old_hash, false, || {}).unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"new");
     }
     #[test]
