@@ -41,13 +41,18 @@ Open `SIGNING-MODE.txt` first.
 
 - `unsigned-preview` is an explicit early-preview fallback. Windows may show an unknown-publisher SmartScreen warning; do not treat the checksum as a replacement for a publisher signature.
 
-Signing is fail-closed when the repository's `MORROW_SIGNING_REQUIRED` variable is `true`. When a certificate is configured, the repository must also provide `MORROW_SIGNING_CERTIFICATE_THUMBPRINT`; the build compares the embedded signer thumbprint with that expected identity, verifies the Authenticode chain and requires a trusted timestamp. A missing or invalid certificate fails the tagged build rather than producing a misleading signed label. The thumbprint and expected publisher should be recorded in the repository's protected release configuration, never guessed from the installer.
+Signing is fail-closed when the repository's `MORROW_SIGNING_REQUIRED` variable is `true`. Signing uses SSL.com eSigner through its CodeSignTool client. The signing key stays in SSL.com's hardware security module; no certificate file is exported or stored in the repository or in CI. When the eSigner account secrets are present, the repository must also provide every other setting listed below. A partly configured tagged build fails rather than publishing an unsigned release under a signed label. The build compares the embedded signer thumbprint with `MORROW_SIGNING_CERTIFICATE_THUMBPRINT`, verifies the Authenticode chain and requires a trusted timestamp.
 
-The repository secret and variable names keep the `MORROW_` prefix. They are existing repository settings, and renaming them would require reconfiguring the repository before the next tagged build.
+Maintainers configure these in the repository's protected release configuration:
 
-**Important: the current signing step does not match how certificates are issued today.** Since June 2023 the CA/Browser Forum requires code-signing private keys to be generated and stored in certified hardware (FIPS 140-2 Level 2 or Common Criteria EAL 4+) or in a compliant cloud signing service, and the key must be non-exportable. Certificate authorities therefore no longer issue a downloadable `.pfx` for code signing. The workflow's `signtool sign /f <pfx>` step, and the base64 `MORROW_SIGNING_CERTIFICATE` secret it reads, only work with an exportable certificate. Before the first signed tag, the signing step must be changed to the route you choose: cloud signing with the provider's client, or a USB token attached to a self-hosted Windows runner. Until that change is merged, a tagged build with `MORROW_SIGNING_REQUIRED=true` will fail, and without it the release is published as `unsigned-preview`.
+- Secrets: `SSL_COM_USERNAME`, `SSL_COM_PASSWORD`, and `SSL_COM_TOTP_SECRET` (the two-factor seed for unattended OTP generation).
+- Variables: `SSL_COM_CREDENTIAL_ID` (the eSigner credential ID for the code-signing certificate), `SSL_COM_CODESIGNTOOL_URL` (the https URL of the CodeSignTool archive), `SSL_COM_CODESIGNTOOL_SHA256` (the SHA-256 of that archive, pinned by a maintainer after checking it against SSL.com's published value), `MORROW_SIGNING_CERTIFICATE_THUMBPRINT` (the expected publisher thumbprint), and optionally `MORROW_SIGNING_REQUIRED`.
 
-For the route that is currently implemented, maintainers configure `MORROW_SIGNING_CERTIFICATE` as a base64-encoded PFX secret, `MORROW_SIGNING_CERTIFICATE_PASSWORD` as a protected secret, and `MORROW_SIGNING_CERTIFICATE_THUMBPRINT` as a repository variable. `MORROW_TIMESTAMP_URL` may select an approved RFC 3161 service; `MORROW_SIGNING_REQUIRED=true` makes a certificate mandatory for tagged releases.
+The archive is accepted only if its SHA-256 matches the pinned value. Changing the URL or the hash is a deliberate maintainer change and should be reviewed like any other release change.
+
+Known limitation: CodeSignTool takes credentials as command-line arguments. On a single-tenant GitHub-hosted runner the process list is not shared, but this should be revisited if the runner model changes.
+
+The `MORROW_` names that remain are existing repository settings. Renaming them would require reconfiguring the repository before the next tagged build.
 
 ## Check build provenance
 
