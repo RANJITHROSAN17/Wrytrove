@@ -241,7 +241,7 @@ jobs:
       - name: Refuse mismatched release inputs
         run: node scripts/release.mjs verify-release dist "$GITHUB_REF_NAME" "$GITHUB_SHA"
       - name: Create GitHub artifact provenance attestation
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             dist/*-setup.exe
