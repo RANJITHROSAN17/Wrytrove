@@ -100,3 +100,9 @@ Do not close an implementation issue because a plan exists. Close it only when i
 - [#69](https://github.com/RANJITHROSAN17/morrow-editor/issues/69) — user interviews, task study and assistive-technology validation.
 
 The validation issues are deliberately separate from implementation issues: a green unit test cannot be used as a substitute for a Windows, security, model-provider or user-study result.
+
+## VAL-05 pre-recruitment addendum (19 November 2026)
+
+A [study protocol and toolkit](VALIDATION-STUDY-VAL-05.md) now supplies the artifacts that issue #69 requires before recruiting: a consent script, synthetic checksummed fixtures, a privacy plan, an anonymized coded observation template, facilitator and assistive-technology scripts, an issue-ready appendix for #56, a pre-registered decision ledger and a pilot-size record. `npm run study:check` verifies fixture integrity, scans committed study artifacts for prohibited data and validates any local coded rows; `npm run study:aggregate` produces persona, condition, accessibility and decision summaries without raw rows. Both are local tools with no network calls. The project maintainer recorded v0.1 sign-off on 19 November 2026 UTC; any applicable local human-subjects, privacy or legal review remains a separate gate.
+
+**No participants were recruited or observed while adding this kit.** Zero sessions are recorded, no AT finding is attached, and no product decision has been changed, confirmed or rejected. The aggregator deliberately returns `insufficient_evidence` until coverage is met. This addendum changes the user-study row from "no plan" to "protocol prepared, not run"; it does not close #69 or #56.

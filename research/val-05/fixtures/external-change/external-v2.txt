@@ -1,0 +1,3 @@
+VAL05-EXTERNAL-CHANGE-DISK-SYNTHETIC-FIXTURE-NEWER-ON-DISK-VERSION
+The newer disk version has a different quiet line.
+Both versions are synthetic and neither should be silently overwritten.

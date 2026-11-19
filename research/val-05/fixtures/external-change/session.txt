@@ -1,0 +1,3 @@
+VAL05-EXTERNAL-CHANGE-BASE-SYNTHETIC-FIXTURE-EDITOR-DRAFT-START
+The first disk version has one quiet line.
+Keep this draft unsaved until the facilitator changes the disk copy.

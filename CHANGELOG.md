@@ -30,6 +30,7 @@
 
 ### Tests and docs
 
+- Add the VAL-05 pre-recruitment study kit for #69: a consent script, synthetic checksummed fixtures, privacy plan, coded observation template and codebook, facilitator and assistive-technology scripts, a decision ledger, pilot-size record, and privacy-preserving aggregation tooling. Maintainer v0.1 sign-off is recorded, but no user sessions were run and no product decisions are claimed; the issue remains open until sessions or a signed pilot exception produce evidence.
 - 250 unit tests across 25 files, including new suites for word statistics, outlines, notes and front matter, Markdown formatting, focus modes, Markdown extensions, the note index, discovery, the daily goal and the minimap. `npx tsc --noEmit` is clean.
 - Add [Wrytrove at a glance](docs/WRYTROVE-AT-A-GLANCE.md), a one-image visual explainer of what the app is, a day with it, and an honest list of what is still unproven.
 

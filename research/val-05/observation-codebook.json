@@ -1,0 +1,121 @@
+{
+  "version": 1,
+  "name": "VAL-05 anonymized observation codebook",
+  "rule": "One row per task and condition. Use only the columns and codes in this file. No free text, quotes, document excerpts, personal paths, prompts, recordings or identifiers.",
+  "min_sessions": 5,
+  "session_id_pattern": "S01 through S99; never a name",
+  "columns": [
+    "session_id",
+    "persona_code",
+    "task_id",
+    "display_code",
+    "at_code",
+    "completion_code",
+    "help_count",
+    "error_count",
+    "hesitation_seconds",
+    "duration_seconds",
+    "comprehension_code",
+    "severity_code",
+    "finding_code"
+  ],
+  "persona_codes": {
+    "writer": "Markdown, focus and typewriter workflow",
+    "developer": "Code editing and workspace search workflow",
+    "note_taker": "Tags, wikilinks, backlinks and daily notes workflow",
+    "privacy_sensitive": "Recovery and AI consent decision workflow",
+    "assistive_tech": "Keyboard-only, Narrator or NVDA workflow"
+  },
+  "task_ids": {
+    "T01": "First-run install, synthetic open and uninstall",
+    "T02": "Open, edit, save and save-as",
+    "T03": "External-change recovery and safe save",
+    "T04": "Workspace search and source identification",
+    "T05": "Compare, review, accept or reject and undo",
+    "T06": "Tag, wikilink, backlink and daily-note navigation",
+    "T07": "Bounded Markdown preview",
+    "T08": "Recovery and AI consent decision without a live send",
+    "T09": "Settings discovery, change and restore",
+    "T10": "Keyboard-only core path and focus behavior",
+    "T11": "Narrator and NVDA names, roles and announcements",
+    "T12": "Scaling, forced colors and minimum window"
+  },
+  "display_codes": {
+    "scale_100": "100 percent scaling",
+    "scale_150": "150 percent scaling",
+    "scale_200": "200 percent scaling",
+    "forced_colors": "Windows forced colors or high contrast",
+    "min_window": "Minimum supported decorated window geometry",
+    "not_applicable": "Display condition not varied for this row"
+  },
+  "at_codes": {
+    "none": "No separate assistive-technology condition",
+    "keyboard_only": "Keyboard without pointer navigation",
+    "narrator": "Windows Narrator",
+    "nvda": "NVDA",
+    "narrator_keyboard_only": "Narrator with keyboard only",
+    "nvda_keyboard_only": "NVDA with keyboard only"
+  },
+  "completion_codes": {
+    "independent": "Completed without a hint",
+    "with_prompt": "Completed after a neutral repeat of the task",
+    "with_facilitator_help": "Completed after facilitator assistance",
+    "failed": "Did not complete the goal",
+    "not_attempted": "Skipped for a non-product reason",
+    "withdrawn": "Participant stopped this task"
+  },
+  "comprehension_codes": {
+    "clear": "Explanation matches the actual state",
+    "minor_uncertainty": "Correct after a brief hesitation",
+    "confused": "Unsure what happened",
+    "incorrect_model": "Confidently describes the wrong state",
+    "not_asked": "No comprehension question for this row"
+  },
+  "severity_codes": {
+    "none": "No finding",
+    "low": "Cosmetic or minor friction",
+    "medium": "Task delay or repeated confusion",
+    "high": "Core task blocked or unsafe state misunderstood",
+    "blocker": "Potential data loss, inaccessible core path or consent failure"
+  },
+  "finding_codes": {
+    "none": "No finding",
+    "FOCUS_TRAP": "Focus cannot leave or return predictably",
+    "UNLABELED_CONTROL": "Control, dialog or state lacks a usable name",
+    "STATE_COLOR_ONLY": "Active, dirty or stale state relies on color alone",
+    "LAYOUT_CLIPPED": "Control is clipped, overlapped or unreachable",
+    "STATUS_NOT_ANNOUNCED": "Progress, error or status is not announced",
+    "SAVED_UNSAVED_CONFUSION": "Saved versus unsaved state is unclear",
+    "EXTERNAL_CHANGE_CONFUSION": "Disk versus draft recovery choice is unclear",
+    "SEARCH_SOURCE_UNCLEAR": "Disk versus unsaved search result is unclear",
+    "REVIEW_UNCLEAR": "Diff, accept, reject or undo is unclear",
+    "NOTE_NAVIGATION_UNCLEAR": "Tags, links, backlinks or daily notes are unclear",
+    "PREVIEW_UNCLEAR": "Preview discovery or inert behavior is unclear",
+    "AI_DESTINATION_UNCLEAR": "Local versus cloud destination is unclear",
+    "AI_CONSENT_UNCLEAR": "Consent, payload or cancellation is unclear",
+    "RECOVERY_PRIVACY_UNCLEAR": "Local recovery storage or deletion is unclear",
+    "INSTALL_UNINSTALL_UNCLEAR": "Install, uninstall or file ownership is unclear",
+    "SETTINGS_UNCLEAR": "Setting discovery, change or restore is unclear",
+    "PERFORMANCE_HESITATION": "Visible delay caused repeated hesitation",
+    "OTHER_REDACTED": "Use only with a separate synthetic reproduction; never quote the participant"
+  },
+  "required_conditions": {
+    "display": ["scale_100", "scale_150", "scale_200", "forced_colors", "min_window"],
+    "assistive": ["keyboard_only", "narrator", "nvda"]
+  },
+  "metadata_never_recorded": [
+    "participant name",
+    "contact details",
+    "account or handle",
+    "personal address",
+    "personal file path",
+    "document text",
+    "participant prompt",
+    "model response containing participant text",
+    "voice recording",
+    "screen recording",
+    "unredacted screenshot",
+    "personal identifier"
+  ],
+  "analysis_gate": "At least five distinct sessions, all five personas, every required display and assistive condition, and every core task must be present before a product decision can change, be confirmed or be explicitly rejected."
+}
