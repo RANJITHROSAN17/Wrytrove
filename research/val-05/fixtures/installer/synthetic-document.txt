@@ -1,0 +1,3 @@
+VAL05-INSTALLER-SYNTHETIC-DOCUMENT-FIRST-RUN-AND-UNINSTALL-CHECK
+This ordinary text file must survive uninstall unchanged.
+It is not an application setting and it is not a user document.

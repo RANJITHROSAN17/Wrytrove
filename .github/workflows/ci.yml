@@ -33,6 +33,9 @@ jobs:
       - name: Static security boundary audit
         run: npm run audit:static
 
+      - name: VAL-05 study kit privacy and fixture guard
+        run: npm run study:check
+
       - name: Unit tests (Vitest)
         run: npm test
 

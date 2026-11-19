@@ -1,0 +1,121 @@
+{
+  "version": 1,
+  "generated_by": "scripts/validation/study-evidence.mjs fixtures --write",
+  "files": [
+    {
+      "path": "README.md",
+      "size": 1478,
+      "sha256": "40da5d360d60e8801bad25bc2d9da8887084fb330fe0b630e7274ce21cf09833"
+    },
+    {
+      "path": "assistive-tech/announcement-checklist.md",
+      "size": 442,
+      "sha256": "50c2e86c19de30f0b63efa1aa06ca2a0abec3f7fb52bd1f5acb48b0100c24775"
+    },
+    {
+      "path": "assistive-tech/keyboard-path.md",
+      "size": 402,
+      "sha256": "0ac0b5db59ae538af6089c390a2364d65a417585e2c8651d34db6889efc2e66e"
+    },
+    {
+      "path": "developer/project/README.md",
+      "size": 360,
+      "sha256": "c482b11c41a00491bd6bc0482b4cd61adb4248680e5f5766a862d42363a0b32a"
+    },
+    {
+      "path": "developer/project/src/app.ts",
+      "size": 427,
+      "sha256": "f0c7e411b85e0e7c7f8423f19a1497cb12dcb114fd3b89b118f27496787357ec"
+    },
+    {
+      "path": "developer/project/src/ledger.ts",
+      "size": 454,
+      "sha256": "71847c725fcee7313de92eecfad7bd1944a3a58566db0989282cbfea646509e2"
+    },
+    {
+      "path": "developer/project/tests/app.test.ts",
+      "size": 369,
+      "sha256": "ac93857ed078addb04327d1e720bfe63871e7b6be78984fb8345c3da76cee287"
+    },
+    {
+      "path": "external-change/external-v2.txt",
+      "size": 190,
+      "sha256": "b4afa118950612a03afb17c591f985f8d5f717d3a7d34aec5d9c4fa768304a77"
+    },
+    {
+      "path": "external-change/session.txt",
+      "size": 176,
+      "sha256": "572ea81db3293895e5191977814d60f43f78f5af1d9d9a223f03fa87f217d435"
+    },
+    {
+      "path": "installer/synthetic-document.txt",
+      "size": 187,
+      "sha256": "ad5eb1b9d4c654c01abdffcc0cdfd70d88feb3d8065cb80fa2b6d6b6717a82e9"
+    },
+    {
+      "path": "notes/Harbor.md",
+      "size": 354,
+      "sha256": "d70988434864fda0cdb5376aa03a6e7305e784fde48ed79f8260999549c89a0a"
+    },
+    {
+      "path": "notes/Inbox.md",
+      "size": 177,
+      "sha256": "d05700ad549030c3d30cec56c7cc781d7ed8c6e5b3b47f848df5bf2dd0c448f6"
+    },
+    {
+      "path": "notes/Index.md",
+      "size": 370,
+      "sha256": "0d62b98584ee0b7e3d88becf1f3448f212aee716951bdce46d04b7d04a9ddfe8"
+    },
+    {
+      "path": "notes/Lantern.md",
+      "size": 340,
+      "sha256": "1fb63f252548d6208a8519e575d6b70b2060a0ff544c1b9be09ca2e2a745f4cd"
+    },
+    {
+      "path": "notes/daily/2026-11-18.md",
+      "size": 286,
+      "sha256": "567baa1d0e2c894e7d2bd9de5ae6843934beaac1c46b2b26924d720574cb8e9e"
+    },
+    {
+      "path": "notes/daily/2026-11-19.md",
+      "size": 262,
+      "sha256": "b86835844447abb5abb3b606bfa042918db31de8c017035ccc376c766784bcae"
+    },
+    {
+      "path": "privacy/ai-consent.md",
+      "size": 679,
+      "sha256": "5adb96cc6cbe3bcd36dfd26737aea102ff3953b9a06e3783ff0dad1052ad0171"
+    },
+    {
+      "path": "privacy/recovery-choice.md",
+      "size": 614,
+      "sha256": "af32d55569c26ffcb0e271b0991b79601838d15dca34b22f9fec55b2afcb1e50"
+    },
+    {
+      "path": "review/before.ts",
+      "size": 255,
+      "sha256": "0330c291170ece937a4744eef326785640ab0afabffe16c0f17bf5b002f3dcba"
+    },
+    {
+      "path": "review/proposed.ts",
+      "size": 262,
+      "sha256": "556f9a15ccc560c4d31adc8d310b35417a461be5b19f9bc95a7b6b0aa5bba083"
+    },
+    {
+      "path": "settings/sample.txt",
+      "size": 206,
+      "sha256": "ec3bd153459caad11ee9f56518d6d094f16296533d80b3178c0894fba4a3fef9"
+    },
+    {
+      "path": "writer/chapter.md",
+      "size": 594,
+      "sha256": "946dadd12da71e0ec520d52263debb47a58a3b55ffd541938dd4ae5aa35ed1a8"
+    },
+    {
+      "path": "writer/preview.md",
+      "size": 575,
+      "sha256": "0d7bf787d465cbfa6cf78734780d717b2466cd079b6a22c2c72598edddb020b0"
+    }
+  ]
+}
