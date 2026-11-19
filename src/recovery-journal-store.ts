@@ -121,7 +121,7 @@ function req<T>(request: IDBRequest<T>): Promise<T> {
  */
 async function writeAtomically(stores: string[], write: (tx: IDBTransaction) => void): Promise<void> {
   const db = await open();
-  const tx = db.transaction(stores, 'readwrite');
+  const tx = db.transaction(stores, 'readwrite', { durability: 'strict' });
   const finished = done(tx);
   try {
     write(tx);
@@ -164,7 +164,7 @@ export function commitDraft(input: DraftInput, ring: JournalKeyRing | null = nul
   return serial(async () => {
     const fail = async (extra: Partial<CommitResult> = {}): Promise<CommitResult> => ({
       saved: false, quotaExceeded: false, keyUnavailable: false,
-      lastCompleteSequence: await lastCompleteSequence(input.docId), ...extra,
+      lastCompleteSequence: await lastCompleteSequence(input.docId, ring), ...extra,
     });
     let manifestRow: ManifestRow;
     let chunkRows: ChunkRow[];
@@ -208,10 +208,23 @@ async function listIndex(): Promise<IndexRow[]> {
   return all.map(indexOf).filter((row): row is IndexRow => row !== null);
 }
 
-async function lastCompleteSequence(docId: string): Promise<number | null> {
+async function lastCompleteSequence(docId: string, ring: JournalKeyRing | null): Promise<number | null> {
   try {
-    const mine = (await listIndex()).filter((m) => m.docId === docId).map((m) => m.sequence);
-    return mine.length ? Math.max(...mine) : null;
+    const db = await open();
+    const tx = db.transaction([MANIFESTS, CHUNKS], 'readonly');
+    const range = IDBKeyRange.bound([docId, 0], [docId, Number.MAX_SAFE_INTEGER]);
+    const [manifests, chunks] = await Promise.all([
+      req(tx.objectStore(MANIFESTS).getAll(range)) as Promise<ManifestRow[]>,
+      req(tx.objectStore(CHUNKS).getAll(IDBKeyRange.bound([docId, 0], [docId, Number.MAX_SAFE_INTEGER, Infinity]))) as Promise<ChunkRow[]>,
+    ]);
+    for (const row of manifests.reverse()) {
+      const index = indexOf(row);
+      if (!index) continue;
+      const outcome = await resolveEntry(row, chunks.filter((chunk) => chunk.sequence === index.sequence), ring);
+      if (outcome.kind === 'ok') return index.sequence;
+      if (outcome.kind === 'locked') return null;
+    }
+    return null;
   } catch { return null; }
 }
 

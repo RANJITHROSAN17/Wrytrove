@@ -353,3 +353,48 @@ test('quota failure keeps the previous snapshot, saves only metadata, and warns 
   await expect(page.locator('#recovery-status')).toContainText('Recovery paused');
   await expect(page.locator('.cm-content')).toContainText('Previously saved draft');
 });
+
+test('migrates a v1 dirty draft to the journal and keeps cursor-only changes across restart', async ({ page }) => {
+  await page.route('**/seed-recovery-v1', (route) => route.fulfill({ contentType: 'text/html', body: '<title>Recovery fixture</title>' }));
+  await page.goto('/seed-recovery-v1');
+  await page.evaluate(() => new Promise<void>((resolve, reject) => {
+    const open = indexedDB.open('morrow-local-session-v1', 1);
+    open.onupgradeneeded = () => { open.result.createObjectStore('session'); };
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const tx = db.transaction('session', 'readwrite');
+      tx.oncomplete = () => { db.close(); resolve(); };
+      tx.onabort = () => { db.close(); reject(tx.error); };
+      tx.objectStore('session').put({ version: 1, activeId: 'legacy-tab', documents: [{
+        id: 'legacy-tab', name: 'Legacy draft', text: 'draft from v1', path: null, savedText: '', selection: 4,
+        encoding: 'UTF-16 LE', lineEnding: 'CRLF',
+      }] }, 'current');
+    };
+  }));
+  const journalCursor = () => page.evaluate(() => new Promise<number | null>((resolve, reject) => {
+    const open = indexedDB.open('wrytrove-draft-journal-v2', 1);
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const read = db.transaction('manifests').objectStore('manifests').getAll();
+      read.onsuccess = () => {
+        const last = read.result.filter((row) => row.docId === 'legacy-tab').at(-1);
+        db.close(); resolve(last?.cursor ?? null);
+      };
+      read.onerror = () => { db.close(); reject(read.error); };
+    };
+  }));
+  await ready(page);
+  await expect(page.locator('.cm-content')).toHaveText('draft from v1');
+  await expect.poll(journalCursor).toBe(4);
+  await page.locator('.cm-content').focus();
+  await page.keyboard.press('End');
+  await expect.poll(journalCursor).toBe('draft from v1'.length);
+  await page.reload();
+  await expect(page.locator('#app')).not.toHaveAttribute('inert', '');
+  await expect(page.locator('.cm-content')).toHaveText('draft from v1');
+  await page.locator('.cm-content').focus();
+  await page.keyboard.insertText('!');
+  await expect(page.locator('.cm-content')).toHaveText('draft from v1!');
+});
