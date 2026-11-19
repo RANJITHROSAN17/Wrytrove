@@ -90,7 +90,17 @@ jobs:
         shell: pwsh
         run: node scripts/release.mjs verify-tag $env:GITHUB_REF_NAME
       - name: Build unsigned Windows installer
-        run: npm run tauri build -- --target x86_64-pc-windows-msvc
+        shell: pwsh
+        run: |
+          npm run tauri build -- --target x86_64-pc-windows-msvc 2>&1 | Tee-Object -FilePath installer-build-output.txt
+          $buildExit = $LASTEXITCODE
+          if ($buildExit -ne 0) {
+            Get-Content installer-build-output.txt -Tail 30 | ForEach-Object {
+              $text = $_.Trim() -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+              if ($text) { Write-Output ('::error title=Windows installer build::' + $text) }
+            }
+          }
+          exit $buildExit
       - name: Stage installer
         shell: pwsh
         run: node scripts/release.mjs stage-installers src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis release
@@ -241,7 +251,7 @@ jobs:
       - name: Refuse mismatched release inputs
         run: node scripts/release.mjs verify-release dist "$GITHUB_REF_NAME" "$GITHUB_SHA"
       - name: Create GitHub artifact provenance attestation
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             dist/*-setup.exe
