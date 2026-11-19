@@ -12,20 +12,22 @@ async function mockDesktop(page: Page) {
     win.__TAURI_INTERNALS__ = {
       metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main' } },
       transformCallback: () => ++next,
-      invoke: async (command: string, args: Record<string, unknown> = {}) => {
+      invoke: async (command: string, args: Record<string, unknown> | Uint8Array = {}, options?: { headers?: Record<string, string> }) => {
         if (command === 'take_launch_files') return [];
         if (command === 'plugin:event|listen') return ++next;
         if (command === 'plugin:http|fetch') {
-          const client = args.clientConfig as Client;
+          const config = options?.headers?.['client-config'];
+          if (!(args instanceof Uint8Array) || !config) throw new Error('Expected binary HTTP IPC with client configuration');
+          const client: Client = { ...JSON.parse(decodeURIComponent(config)), data: Array.from(args) };
           win.__arenaCalls.push(client);
           const id = ++next; requests.set(id, { client, bodyRead: false }); return id;
         }
         if (command === 'plugin:http|fetch_send') {
-          const id = args.rid as number;
+          const id = (args as { rid: number }).rid;
           return { status: 200, statusText: 'OK', url: 'https://api.arena.ai/v1/chat/completions', headers: [['content-type', 'application/json']], rid: id };
         }
         if (command === 'plugin:http|fetch_read_body') {
-          const entry = requests.get(args.rid as number)!;
+          const entry = requests.get((args as { rid: number }).rid)!;
           if (entry.bodyRead) return [1];
           entry.bodyRead = true;
           const request = JSON.parse(new TextDecoder().decode(new Uint8Array(entry.client.data))) as { model: string; messages: { content: string }[] };

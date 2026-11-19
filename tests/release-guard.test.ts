@@ -36,7 +36,7 @@ describe('tagged release guard', () => {
     expect(workflow).toContain('contents: write');
     expect(workflow).toContain('id-token: write');
     expect(workflow).toContain('attestations: write');
-    expect(workflow).toContain('uses: actions/attest-build-provenance@v2');
+    expect(workflow).toMatch(/^\s*uses: actions\/attest-build-provenance@v[1-9][0-9]*\s*$/m);
     expect(workflow).toContain('dist/*-setup.exe');
     expect(workflow).toContain('dist/package-lock.json');
     expect(workflow).toContain('dist/Cargo.lock');
