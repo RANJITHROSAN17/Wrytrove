@@ -6,7 +6,7 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn(), save: vi.fn() }));
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { MAX_FILE_BYTES } from '../src/encoding';
-import { collectOpenedFiles, pickFiles, writeTo, ExternalChangeError } from '../src/platform';
+import { collectOpenedFiles, pickFiles, readNative, writeTo, ExternalChangeError, NativeFileTooLargeError } from '../src/platform';
 
 beforeEach(() => { vi.resetAllMocks(); });
 
@@ -35,6 +35,14 @@ describe('independent file opening', () => {
     vi.mocked(open).mockResolvedValue(null);
     expect(await pickFiles()).toEqual({ files: [], failures: [] });
     expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('offers large mode only for the explicit open path and preserves the size rejection', async () => {
+    vi.mocked(invoke).mockRejectedValueOnce('WRYTROVE_LARGE_FILE: File exceeds the 1024-byte limit for this operation.');
+    await expect(readNative('C:\\work\\file.log', 1024)).rejects.toBeInstanceOf(NativeFileTooLargeError);
+    expect(invoke).toHaveBeenCalledWith('workspace_read_file', {
+      path: 'C:\\work\\file.log', maxBytes: 1024, offerLargeView: true,
+    });
   });
 
   it('continues after a loader throws and processes items sequentially', async () => {

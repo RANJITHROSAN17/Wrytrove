@@ -271,6 +271,28 @@
   <div class="modal-actions"><button data-close-dialog="goal-dialog">Cancel</button><button id="goal-save" class="primary">Save goal</button></div>
 </dialog>
 <dialog id="confirm-dialog" class="modal confirm-modal"><div class="modal-header"><div><span class="eyebrow" id="confirm-eyebrow">BEFORE YOU GO</span><h2 id="confirm-title">Save changes?</h2></div><button class="icon-button" id="confirm-x" aria-label="Cancel" data-icon="close"></button></div><p class="confirm-message" id="confirm-message"></p><div class="modal-actions" id="confirm-actions"></div></dialog>
+<dialog id="large-file-dialog" class="modal large-file-modal" aria-labelledby="large-title">
+  <div class="modal-header"><div><span class="eyebrow">LARGE FILE · READ ONLY</span><h2 id="large-title">Large text viewer</h2></div><button id="large-close" type="button">Close viewer</button></div>
+  <p id="large-name" class="modal-intro"></p>
+  <p class="modal-footnote">Native UTF-8 text only. The editable limit is at most 20 MiB and can be lower when WebView memory is tight. This viewer reads windows up to a 1 GiB file limit. Editing, saving, syntax highlighting, Markdown preview, note indexing, recovery, AI, minimap and document statistics are unavailable here.</p>
+  <p id="large-page-status" role="status"></p>
+  <button id="large-load" class="primary" type="button">Load first window</button>
+  <div id="large-tools" hidden>
+    <form id="large-jump" class="large-file-controls">
+      <button id="large-prev" type="button">Previous window</button><button id="large-next" type="button">Next window</button>
+      <label>Byte offset <input id="large-offset" class="input" type="number" min="0" step="1" required></label><button id="large-go">Go</button>
+    </form>
+    <pre id="large-text" tabindex="0" aria-label="Read-only text window"></pre>
+    <form id="large-search" class="large-file-controls">
+      <label>Find in file <input id="large-query" class="input" type="search" autocomplete="off" spellcheck="false" required></label>
+      <label><input id="large-regex" type="checkbox"> Regex</label>
+      <button id="large-start">Search</button><button id="large-cancel" type="button">Cancel search</button><button id="large-export" type="button">Export matched ranges</button>
+    </form>
+    <p class="modal-footnote">Case-sensitive, within LF/CRLF-delimited lines. Lines above 256 KiB are skipped; search stops at 200 matches. Export includes byte ranges, line numbers and short excerpts, not the original file.</p>
+    <p id="large-search-status" role="status"></p>
+    <ol id="large-results" aria-label="Search results"></ol>
+  </div>
+</dialog>
 <dialog id="open-errors-dialog" class="modal" aria-labelledby="open-errors-title"><div class="modal-header"><div><span class="eyebrow">FILE OPEN REPORT</span><h2 id="open-errors-title">Some files could not be opened</h2></div><button class="icon-button" data-close-dialog="open-errors-dialog" aria-label="Close file open report" data-icon="close"></button></div><p class="modal-intro" id="open-errors-summary"></p><ul class="open-errors-list" id="open-errors-list"></ul><div class="modal-actions"><button data-close-dialog="open-errors-dialog" class="primary">Got it</button></div></dialog>
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 <script type="module" src="/src/main.ts"></script>

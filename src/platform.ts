@@ -19,12 +19,24 @@ function checkSize(size: number): void {
   if (size > MAX_FILE_BYTES) throw new Error('This file is larger than the 20 MiB safety limit.');
 }
 
-export async function readNative(path: string): Promise<OpenedFile> {
+export class NativeFileTooLargeError extends Error {}
+
+export async function pickNativePaths(): Promise<string[]> {
+  const result = await open({ multiple: true, directory: false, title: 'Open a text or code file' });
+  return Array.isArray(result) ? result : result ? [result] : [];
+}
+
+export async function readNative(path: string, editableLimit?: number): Promise<OpenedFile> {
   // Native code enforces scope, no-follow and the size bound before bytes cross IPC,
   // even if a file grows between metadata inspection and the actual read.
-  const data = await invoke<ArrayBuffer>('workspace_read_file', { path, maxBytes: MAX_FILE_BYTES });
+  const request = editableLimit === undefined ? { path, maxBytes: MAX_FILE_BYTES } : { path, maxBytes: editableLimit, offerLargeView: true };
+  const data = await invoke<ArrayBuffer>('workspace_read_file', request).catch((error: unknown) => {
+    const prefix = 'WRYTROVE_LARGE_FILE: ';
+    if (typeof error === 'string' && error.startsWith(prefix)) throw new NativeFileTooLargeError(error.slice(prefix.length));
+    throw error;
+  });
   const bytes = new Uint8Array(data);
-  checkSize(bytes.length);
+  if (bytes.length > (editableLimit ?? MAX_FILE_BYTES)) throw new NativeFileTooLargeError('File exceeded the editable size budget.');
   return { name: fileName(path), bytes, ref: { kind: 'native', path } };
 }
 
@@ -79,12 +91,7 @@ function selectWithInput(): Promise<OpenFilesResult> {
 }
 
 export async function pickFiles(): Promise<OpenFilesResult> {
-  if (desktop) {
-    const result = await open({ multiple: true, directory: false, title: 'Open a text or code file' });
-    if (!result) return { files: [], failures: [] };
-    const paths = Array.isArray(result) ? result : [result];
-    return collectOpenedFiles(paths, readNative, fileName);
-  }
+  if (desktop) return collectOpenedFiles(await pickNativePaths(), readNative, fileName);
   const picker = (window as Window & BrowserPicker).showOpenFilePicker;
   if (picker) {
     let handles: FileSystemFileHandle[];

@@ -6,8 +6,10 @@ use tauri_plugin_fs::FsExt;
 
 mod access_revocation;
 mod journal_key;
+mod large_file;
 
 const MAX_FILE_BYTES: usize = 20 * 1024 * 1024;
+const LARGE_FILE_PREFIX: &str = "WRYTROVE_LARGE_FILE: ";
 const MAX_DIRECTORY_ENTRIES: usize = 2_000;
 
 #[derive(Default)]
@@ -263,9 +265,22 @@ fn bounded_directory(path: &Path) -> Result<serde_json::Value, String> {
 /// component is opened without following links; parent-directory races remain.
 fn bounded_read(path: &Path, max_bytes: usize) -> Result<Vec<u8>, String> {
     if max_bytes == 0 || max_bytes > MAX_FILE_BYTES { return Err("Invalid file size limit.".into()); }
+    let (file, metadata) = open_regular_file(path)?;
+    if metadata.len() > max_bytes as u64 {
+        return Err(format!("{LARGE_FILE_PREFIX}File exceeds the {max_bytes}-byte limit for this operation."));
+    }
+    let mut bytes = Vec::new();
+    file.take(max_bytes as u64 + 1).read_to_end(&mut bytes).map_err(|err| format!("Cannot read file: {err}"))?;
+    if bytes.len() > max_bytes {
+        return Err(format!("{LARGE_FILE_PREFIX}File grew beyond the size limit while reading."));
+    }
+    Ok(bytes)
+}
+
+/// Open the final path component without following links or blocking on a Unix FIFO.
+fn open_regular_file(path: &Path) -> Result<(fs::File, fs::Metadata), String> {
     let metadata = fs::symlink_metadata(path).map_err(|err| format!("Cannot inspect file: {err}"))?;
     if is_link_or_reparse(&metadata) || !metadata.is_file() { return Err("Symbolic links, reparse points and non-regular files are skipped.".into()); }
-    if metadata.len() > max_bytes as u64 { return Err(format!("File exceeds the {} MiB limit for this operation.", max_bytes / 1024 / 1024)); }
     let mut options = fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -282,10 +297,33 @@ fn bounded_read(path: &Path, max_bytes: usize) -> Result<Vec<u8>, String> {
     let file = options.open(path).map_err(|err| format!("Cannot open file: {err}"))?;
     let opened = file.metadata().map_err(|err| format!("Cannot inspect open file: {err}"))?;
     if is_link_or_reparse(&opened) || !opened.is_file() { return Err("The opened item is not a regular file.".into()); }
-    let mut bytes = Vec::new();
-    file.take(max_bytes as u64 + 1).read_to_end(&mut bytes).map_err(|err| format!("Cannot read file: {err}"))?;
-    if bytes.len() > max_bytes { return Err("File grew beyond the size limit while reading.".into()); }
-    Ok(bytes)
+    Ok((file, opened))
+}
+
+fn check_read_path(app: &tauri::AppHandle, path: &Path) -> Result<(), String> {
+    if !path.is_absolute() || path.components().any(|part| matches!(part, std::path::Component::ParentDir)) {
+        return Err("Invalid file path.".into());
+    }
+    if !app.fs_scope().is_allowed(path) { return Err("This file has not been selected for access in Wrytrove.".into()); }
+    check_not_revoked(app, path)
+}
+
+#[tauri::command]
+async fn large_file_inspect(app: tauri::AppHandle, path: String) -> Result<serde_json::Value, String> {
+    let path = PathBuf::from(path);
+    check_read_path(&app, &path)?;
+    tauri::async_runtime::spawn_blocking(move || large_file::inspect(&path)).await.map_err(|err| format!("File task failed: {err}"))?
+}
+
+#[tauri::command]
+async fn large_file_range(app: tauri::AppHandle, path: String, version: String, offset: u64, length: usize) -> Result<tauri::ipc::Response, String> {
+    let path = PathBuf::from(path);
+    check_read_path(&app, &path)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let bytes = large_file::range(&path, &version, offset, length)?;
+        check_read_path(&app, &path)?;
+        Ok(tauri::ipc::Response::new(bytes))
+    }).await.map_err(|err| format!("File task failed: {err}"))?
 }
 
 #[tauri::command]
@@ -297,14 +335,14 @@ async fn workspace_list_directory(app: tauri::AppHandle, path: String) -> Result
 }
 
 #[tauri::command]
-async fn workspace_read_file(app: tauri::AppHandle, path: String, max_bytes: usize) -> Result<tauri::ipc::Response, String> {
+async fn workspace_read_file(app: tauri::AppHandle, path: String, max_bytes: usize, offer_large_view: Option<bool>) -> Result<tauri::ipc::Response, String> {
     let path = PathBuf::from(path);
-    if !path.is_absolute() || path.components().any(|part| matches!(part, std::path::Component::ParentDir)) {
-        return Err("Invalid file path.".into());
-    }
-    if !app.fs_scope().is_allowed(&path) { return Err("This file has not been selected for access in Wrytrove.".into()); }
-    check_not_revoked(&app, &path)?;
-    let bytes = tauri::async_runtime::spawn_blocking(move || bounded_read(&path, max_bytes)).await.map_err(|err| format!("File task failed: {err}"))??;
+    check_read_path(&app, &path)?;
+    let result = tauri::async_runtime::spawn_blocking(move || bounded_read(&path, max_bytes)).await.map_err(|err| format!("File task failed: {err}"))?;
+    let bytes = result.map_err(|error| {
+        if offer_large_view.unwrap_or(false) { error }
+        else { error.strip_prefix(LARGE_FILE_PREFIX).unwrap_or(&error).to_string() }
+    })?;
     Ok(tauri::ipc::Response::new(bytes))
 }
 
@@ -450,7 +488,7 @@ pub fn run() {
             collect_launch_files(app.handle(), std::env::args().collect(), &cwd);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![safe_write, take_launch_files, workspace_list_directory, workspace_read_file, workspace_create_entry, journal_key_load, access_revoke, access_restore, access_revoked_list])
+        .invoke_handler(tauri::generate_handler![safe_write, take_launch_files, workspace_list_directory, workspace_read_file, large_file_inspect, large_file_range, workspace_create_entry, journal_key_load, access_revoke, access_restore, access_revoked_list])
         .run(tauri::generate_context!())
         .expect("error while running Wrytrove");
 }
