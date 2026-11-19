@@ -8,8 +8,10 @@ import { listen } from '@tauri-apps/api/event';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { allLanguages, applyEditorExtensions, applyFocus, clearGhost, createEditorState, findLanguage, hasGhost, languageCompartment, languageLabel, showGhost } from './editor';
-import { decodeFile, encodeFile, sha256, type LineEnding, type TextEncoding } from './encoding';
-import { checkNativeFileChange, chooseSaveTarget, desktop, ExternalChangeError, pickFiles, readNative, refPath, writeTo, type FileRef, type OpenedFile, type OpenFailure } from './platform';
+import { inspectNativeFile, LargeFileView } from './large-file-view';
+import { currentEditableFileLimit } from './large-file-policy';
+import { MAX_FILE_BYTES, decodeFile, encodeFile, sha256, type LineEnding, type TextEncoding } from './encoding';
+import { checkNativeFileChange, chooseSaveTarget, desktop, ExternalChangeError, fileName, NativeFileTooLargeError, pickFiles, pickNativePaths, readNative, refPath, writeTo, type FileRef, type OpenedFile, type OpenFailure } from './platform';
 import { complete, listModels, runAction, DEFAULT_MODEL } from './ai';
 import { MAX_ACTION_SELECTION, buildActionRequest, getAiAction, type AiActionId } from './ai-actions';
 import { hasPartialSessionMetadata, loadSession, loadSettings, saveSession, saveSettings, type SavedDocument, type Session, type Settings } from './storage';
@@ -551,8 +553,24 @@ class WrytroveApp {
     this.toast('A fresh page, just for you.');
   }
 
+  private readonly largeFiles = new LargeFileView();
+
+  private async loadNativeForOpen(path: string, displayPath?: string): Promise<OpenedFile | null> {
+    const editableLimit = currentEditableFileLimit();
+    try {
+      return { ...(await readNative(path, editableLimit)), displayPath };
+    } catch (error) {
+      if (!(error instanceof NativeFileTooLargeError)) throw error;
+      const info = await inspectNativeFile(path);
+      if (info.size <= editableLimit) return { ...(await readNative(path, editableLimit)), displayPath };
+      await this.largeFiles.open(path, fileName(path), info);
+      return null;
+    }
+  }
+
   private async openFiles(): Promise<void> {
     try {
+      if (desktop) { await this.openNativePaths(await pickNativePaths()); return; }
       const result = await pickFiles();
       const failures = [...result.failures];
       for (const file of result.files) {
@@ -568,7 +586,7 @@ class WrytroveApp {
     const dialog = $<HTMLDialogElement>('#open-errors-dialog');
     const list = $('#open-errors-list');
     if (!dialog.open) list.replaceChildren();
-    $('#open-errors-summary').textContent = 'Files that could be opened are available in tabs. The files below were not opened or changed.';
+    $('#open-errors-summary').textContent = 'The files below could not be opened and were not changed.';
     for (const failure of failures) {
       const item = el('li');
       const name = el('strong'); name.textContent = failure.name;
@@ -616,13 +634,14 @@ class WrytroveApp {
   }
 
   private async openRecent(path: string): Promise<void> {
-    try { await this.addOpened(await readNative(path)); }
+    try { const file = await this.loadNativeForOpen(path); if (file) await this.addOpened(file); }
     catch (error) { this.reportOpenFailures([{ name: path, message: this.errorText(error) }]); }
   }
 
   private async openWorkspaceFile(entry: WorkspaceFile, line?: number, column?: number): Promise<Doc | null> {
     try {
-      const opened = await readWorkspaceFile(entry);
+      const opened = entry.kind === 'native' ? await this.loadNativeForOpen(entry.path, entry.relative) : await readWorkspaceFile(entry);
+      if (!opened) return null;
       await this.addOpened(opened);
       const openedDoc = this.docs.find((doc) => this.sameRefPath(doc, entry)) ?? this.active;
       if (line) {
@@ -2362,7 +2381,7 @@ class WrytroveApp {
         const failures: OpenFailure[] = [];
         for (const file of Array.from(event.dataTransfer!.files)) {
           try {
-            if (file.size > 20 * 1024 * 1024) throw new Error('This file is larger than the 20 MiB safety limit.');
+            if (file.size > MAX_FILE_BYTES) throw new Error('This file is larger than the 20 MiB safety limit.');
             await this.addOpened({ name: file.name, bytes: new Uint8Array(await file.arrayBuffer()), ref: { kind: 'download' } });
           } catch (error) { failures.push({ name: file.name, message: this.errorText(error) }); }
         }
@@ -2403,7 +2422,7 @@ class WrytroveApp {
   private async openNativePaths(paths: string[]): Promise<void> {
     const failures: OpenFailure[] = [];
     for (const path of paths) {
-      try { await this.addOpened(await readNative(path)); }
+      try { const file = await this.loadNativeForOpen(path); if (file) await this.addOpened(file); }
       catch (error) { failures.push({ name: path, message: this.errorText(error) }); }
     }
     this.reportOpenFailures(failures);

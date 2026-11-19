@@ -617,3 +617,17 @@ html.zen-mode #editor-shell { flex-direction: column; }
 .access-lease-list { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 8px; }
 .access-lease-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid var(--line-soft); border-radius: 6px; padding: 8px 10px; font-size: 12px; }
 .access-lease-list small { display: block; color: var(--muted); font-size: 11px; line-height: 1.4; }
+
+/* Bounded large-file windows live outside the editor and its document state. */
+.large-file-modal { width: min(58rem, calc(100vw - 2rem)); }
+.large-file-modal p, #large-results code { overflow-wrap: anywhere; }
+.large-file-controls { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; }
+.large-file-controls label { display: inline-flex; align-items: center; gap: .4rem; }
+#large-offset { width: 10rem; }
+#large-text { height: min(34vh, 22rem); overflow: auto; white-space: pre; padding: .75rem; border: 1px solid currentColor; }
+#large-results { max-height: 14rem; overflow: auto; }
+#large-results li { margin-block: .4rem; }
+#large-results code { display: block; white-space: pre-wrap; }
+.large-file-modal button { border: 1px solid var(--line); border-radius: 6px; padding: .45rem .7rem; background: var(--raised); }
+.large-file-modal button.primary { background: var(--primary-bg); color: var(--primary-fg); }
+.large-file-modal button:disabled { opacity: .55; cursor: default; }
