@@ -87,6 +87,8 @@ describe('draft journal store', () => {
     expect(drafts.find((d) => d.docId === id)).toMatchObject({ sequence: 1, text: 'complete draft' });
     // The newer unfinished write is reported separately; the restored draft is still the complete one.
     expect(partial).toContainEqual({ docId: id, sequence: 2 });
+    // A failed follow-up write must not advertise the manifest-only sequence as complete.
+    expect(await commitDraft(draft(id, -1, 'invalid follow-up'))).toMatchObject({ saved: false, lastCompleteSequence: 1 });
   });
 
   it('reports a newer unfinished draft with no complete fallback as partial, not as a restored draft', async () => {

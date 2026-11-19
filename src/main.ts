@@ -47,7 +47,7 @@ const el = <T extends keyof HTMLElementTagNameMap>(tag: T, className = ''): HTML
 };
 const uuid = () => crypto.randomUUID();
 /** Identifies the exact text and file format a draft holds, so unchanged tabs are not rewritten. */
-const journalKeyOf = (text: string, encoding: TextEncoding, lineEnding: LineEnding): string => [text, encoding, lineEnding].join('\u0000');
+const journalKeyOf = (text: string, encoding: TextEncoding, lineEnding: LineEnding, cursor: number): string => [text, encoding, lineEnding, cursor].join('\u0000');
 /** Coalesce rapid saves before rebuilding the folder index off the keystroke path. */
 const NOTE_INDEX_REFRESH_DELAY_MS = 300;
 
@@ -70,7 +70,7 @@ interface Doc {
   revision: number;
   /** AUD-02: sequence of the last draft written for this tab; -1 before any write. */
   journalSeq: number;
-  /** Text, encoding and line ending last written to the draft journal; null when no draft exists. */
+  /** Text, encoding, line ending and cursor last written to the draft journal; null when no draft exists. */
   journalKey: string | null;
 }
 interface ConfirmButton { id: string; label: string; style?: 'primary' | 'danger'; }
@@ -199,7 +199,7 @@ class WrytroveApp {
           const draft = drafts.get(doc.id);
           if (!draft) continue;
           doc.journalSeq = draft.sequence;
-          doc.journalKey = journalKeyOf(draft.text, draft.encoding, draft.lineEnding);
+          doc.journalKey = journalKeyOf(draft.text, draft.encoding, draft.lineEnding, draft.cursor);
           this.journaledIds.add(doc.id);
         }
         if (this.docs.length) {
@@ -403,12 +403,13 @@ class WrytroveApp {
         continue;
       }
       const text = doc.state.doc.toString();
-      const key = journalKeyOf(text, doc.encoding, doc.lineEnding);
+      const cursor = doc.state.selection.main.head;
+      const key = journalKeyOf(text, doc.encoding, doc.lineEnding, cursor);
       if (doc.journalKey === key) continue;
       const sequence = nextJournalSequence(doc.journalSeq, Date.now());
       const result = await commitDraft({
         docId: doc.id, pathToken: null, baseHash: doc.hash, sequence, timestamp: Date.now(),
-        encoding: doc.encoding, lineEnding: doc.lineEnding, cursor: doc.state.selection.main.head, text,
+        encoding: doc.encoding, lineEnding: doc.lineEnding, cursor, text,
       });
       if (!result.saved) return { saved: false, quotaExceeded: result.quotaExceeded };
       doc.journalSeq = sequence;
