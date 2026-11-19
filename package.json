@@ -17,6 +17,10 @@
     "benchmark:products": "node benchmarks/product/run.mjs",
     "benchmark:compare": "node benchmarks/compare.mjs",
     "audit:static": "node scripts/security-audit.mjs",
+    "study:check": "node scripts/validation/study-evidence.mjs check",
+    "study:aggregate": "node scripts/validation/study-evidence.mjs aggregate",
+    "study:fixtures": "node scripts/validation/study-evidence.mjs fixtures research/val-05",
+    "study:fixtures:write": "node scripts/validation/study-evidence.mjs fixtures research/val-05 --write",
     "tauri": "tauri"
   },
   "dependencies": {

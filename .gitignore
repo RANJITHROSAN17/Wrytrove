@@ -16,3 +16,9 @@ benchmark-results.json
 benchmarks/engines/dist/
 benchmarks/product/.fixtures/
 benchmarks/product/products.local.json
+
+# VAL-05 participant evidence stays local until a human-reviewed aggregate is approved
+research/val-05/records/*
+!research/val-05/records/README.md
+research/val-05/findings.md
+research/val-05/*.local.*

@@ -1,0 +1,3 @@
+VAL05-SETTINGS-SYNTHETIC-FIXTURE-APPEARANCE-AND-EDITOR-CONTROL-REHEARSAL
+Change one visible setting, notice the editor, then restore the original value.
+This file is ordinary text and must remain portable.
