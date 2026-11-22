@@ -3,7 +3,7 @@ import { expect, test, type Page } from '@playwright/test';
 async function freshProject(page: Page, multiRoot = false, inbox = false) {
   await page.addInitScript(({ multi, inbox }) => {
     type Handle = { kind: 'file' | 'directory'; name: string; [key: string]: unknown };
-    const win = window as Window & { __projectWrites?: number; __projectCreates?: number; __inboxText?: () => string; __holdWrite?: boolean; __releaseWrite?: () => void; __failReadAfterWrite?: boolean };
+    const win = window as Window & { __projectWrites?: number; __projectCreates?: number; __inboxText?: () => string; __holdWrite?: boolean; __releaseWrite?: () => void; __failReadAfterWrite?: boolean; __createInboxAfterListing?: boolean };
     win.__projectWrites = 0; win.__projectCreates = 0;
     const file = (name: string, initial: string): Handle => {
       let text = initial;
@@ -22,7 +22,13 @@ async function freshProject(page: Page, multiRoot = false, inbox = false) {
     const dir = (name: string, entries: Handle[]): Handle => {
       const handle: Handle = {
         kind: 'directory', name,
-        values: async function* () { for (const entry of entries) yield entry; },
+        values: async function* () {
+          for (const entry of entries) yield entry;
+          if (name === 'demo-project' && win.__createInboxAfterListing) {
+            win.__createInboxAfterListing = false;
+            entries.push(file('Inbox.md', 'Created by another writer'));
+          }
+        },
         isSameEntry: async (other: unknown) => other === handle,
         getFileHandle: async (child: string, options?: { create?: boolean }) => {
           const found = entries.find((entry) => entry.name === child);
@@ -148,6 +154,19 @@ async function startCapture(page: Page, text: string) {
   await page.locator('#capture-text').fill(text);
   await page.locator('#capture-submit').click();
 }
+
+test('capture appends when the destination appears between the two lookups', async ({ page }) => {
+  await freshProject(page); await openFolder(page);
+  await page.evaluate(() => { (window as unknown as { __createInboxAfterListing: boolean }).__createInboxAfterListing = true; });
+  await startCapture(page, 'One raced capture');
+  await expect(page.locator('#capture-dialog')).not.toHaveAttribute('open', '');
+  await expect(page.locator('#toast')).toHaveText('Captured to Inbox.md.');
+  const text = await page.evaluate(() => (window as unknown as { __inboxText: () => string }).__inboxText());
+  expect(text).toContain('Created by another writer');
+  expect(text.match(/One raced capture/g)).toHaveLength(1);
+  expect(await page.evaluate(() => (window as unknown as { __projectCreates: number }).__projectCreates)).toBe(0);
+  expect(await page.evaluate(() => (window as unknown as { __projectWrites: number }).__projectWrites)).toBe(1);
+});
 
 test('capture keeps an open browser draft and the next save detects the disk conflict', async ({ page }) => {
   await freshProject(page, false, true); await openFolder(page);
