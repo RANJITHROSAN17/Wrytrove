@@ -830,6 +830,10 @@ export class Workbench {
     if (!isSafeRelativePath(relative)) throw new Error('The note path must stay inside the selected workspace folder.');
     const root = this.chooseRoot(rootName);
     if (!root) throw new Error('Open a folder first.');
+    return this.ensureFolderNoteInRoot(root, relative, template);
+  }
+
+  private async ensureFolderNoteInRoot(root: WorkspaceRootState, relative: string, template: string): Promise<{ file: WorkspaceFile; created: boolean; rootName: string }> {
     if (!(await this.sameFolder(root.folder, root.folder))) throw new Error('The open folder changed.');
     const segments = relative.split('/').filter(Boolean);
     const name = segments.pop();
@@ -863,10 +867,14 @@ export class Workbench {
     if (!isSafeRelativePath(relative)) throw new Error('The note path must stay inside the selected workspace folder.');
     const root = this.chooseRoot(rootName);
     if (!root) throw new Error('Open a folder first.');
-    const existing = await this.findFile(root, relative);
+    let existing = await this.findFile(root, relative);
     if (!existing) {
       const body = header ? `${header}\n${text}` : text;
-      return this.ensureFolderNote(root.folder.name, relative, body.endsWith('\n') ? body : `${body}\n`);
+      const result = await this.ensureFolderNoteInRoot(root, relative, body.endsWith('\n') ? body : `${body}\n`);
+      if (result.created) return result;
+      // Another writer created the note between the lookups. The helper has not
+      // written the template, so append to the newly found file instead.
+      existing = result.file;
     }
     const opened = await readWorkspaceFile(existing);
     const decoded = decodeFile(opened.bytes);
