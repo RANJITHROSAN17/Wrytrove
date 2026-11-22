@@ -24,12 +24,20 @@ async function mockDesktop(page: Page) {
         }
         if (command === 'plugin:http|fetch_send') {
           const id = (args as { rid: number }).rid;
-          return { status: 200, statusText: 'OK', url: 'https://api.arena.ai/v1/chat/completions', headers: [['content-type', 'application/json']], rid: id };
+          return { status: 200, statusText: 'OK', url: requests.get(id)!.client.url, headers: [['content-type', 'application/json']], rid: id };
         }
         if (command === 'plugin:http|fetch_read_body') {
           const entry = requests.get((args as { rid: number }).rid)!;
           if (entry.bodyRead) return [1];
           entry.bodyRead = true;
+          if (entry.client.url.endsWith('/api/tags')) {
+            const bytes = new TextEncoder().encode(JSON.stringify({ models: [{ name: 'qwen2.5-coder:1.5b' }] }));
+            return [...bytes, 0];
+          }
+          if (entry.client.url.endsWith('/api/generate')) {
+            const bytes = new TextEncoder().encode(JSON.stringify({ response: 'Synthetic Ollama answer' }));
+            return [...bytes, 0];
+          }
           const request = JSON.parse(new TextDecoder().decode(new Uint8Array(entry.client.data))) as { model: string; messages: { content: string }[] };
           const content = request.messages[1].content.startsWith('Instruction:') ? 'SYNTHETIC_REPLACEMENT' : request.model === 'model-one' ? '<script>window.__arenaScriptRan=true</script>' : 'Second model answer';
           const bytes = new TextEncoder().encode(JSON.stringify({ choices: [{ message: { content } }] }));
@@ -86,6 +94,17 @@ test('two-model questions require consent and render untrusted answers as inert 
   await page.getByRole('button', { name: 'Close Arena tools' }).click();
   await expect(page.locator('#arena-key')).toHaveValue('');
   await expect(page.locator('#arena-response-1')).toHaveValue('');
+  await page.getByRole('button', { name: 'AI suggestions settings' }).click();
+  await page.locator('#ai-diagnostics-copy').click();
+  const diagnostics = await page.locator('#ai-diagnostics-output').inputValue();
+  for (const secret of ['synthetic-test-key', 'Explain this concept', 'model-one', 'model-two']) expect(diagnostics).not.toContain(secret);
+  const attempts = (JSON.parse(diagnostics) as { attempts: { bodyBytes: number; provider: string; route: string }[] }).attempts;
+  expect(attempts.map((item) => item.bodyBytes)).toEqual(sent.map((item) => item.data.length));
+  expect(attempts.map((item) => [item.provider, item.route])).toEqual([['arena', 'cloud'], ['arena', 'cloud']]);
+  await page.locator('#ai-diagnostics-clear').click();
+  await expect(page.locator('#ai-diagnostics-status')).toContainText('cleared');
+  await page.locator('#ai-diagnostics-copy').click();
+  expect(JSON.parse(await page.locator('#ai-diagnostics-output').inputValue()).attempts).toEqual([]);
   expect(external).toEqual([]);
 });
 
@@ -117,4 +136,58 @@ test('an Arena edit is applied only after a separate diff review and remains und
   await page.keyboard.press('Control+z');
   await expect(page.locator('.cm-content')).not.toContainText('SYNTHETIC_REPLACEMENT');
   await expect(page.locator('.cm-content')).toContainText(before);
+});
+
+
+test('Ollama consent separates capabilities and model changes turn off inline suggestions', async ({ page }) => {
+  await mockDesktop(page);
+  await page.locator('.cm-content').click(); await page.keyboard.press('Control+Home'); await page.keyboard.press('Shift+End');
+  await page.getByRole('button', { name: 'AI suggestions settings' }).click();
+  await page.locator('[data-ai-action="explain"]').click();
+  await page.locator('#ai-action-run').click();
+  await expect(page.getByRole('heading', { name: 'Send this selection to Ollama?' })).toBeVisible();
+  await expect(page.locator('#confirm-message')).toContainText('UTF-8 bytes');
+  await expect(page.locator('#confirm-message')).toContainText('cloud');
+  expect(await calls(page)).toHaveLength(0);
+  await page.getByRole('button', { name: 'Send and review' }).click();
+  await expect(page.locator('#ai-action-output')).toContainText('Synthetic Ollama answer');
+  expect((await calls(page)).filter((item) => item.url.endsWith('/api/generate'))).toHaveLength(1);
+  await page.locator('[data-ai-action="improve"]').click();
+  await page.locator('#ai-action-run').click();
+  await expect(page.getByRole('heading', { name: 'Send this selection to Ollama?' })).toBeVisible();
+  await page.locator('#confirm-actions').getByRole('button', { name: 'Cancel' }).click();
+  expect((await calls(page)).filter((item) => item.url.endsWith('/api/generate'))).toHaveLength(1);
+  await page.locator('#ai-toggle').click();
+  await expect(page.getByRole('heading', { name: 'Turn on AI suggestions?' })).toBeVisible();
+  await page.getByRole('button', { name: 'Enable suggestions' }).click();
+  await expect(page.locator('#ai-toggle')).toHaveAttribute('aria-checked', 'true');
+  await page.locator('#model-name').fill('new-model');
+  await page.locator('#model-name').press('Tab');
+  await expect(page.locator('#ai-toggle')).toHaveAttribute('aria-checked', 'false');
+  const before = (await calls(page)).filter((item) => item.url.endsWith('/api/generate')).length;
+  await page.locator('.cm-content').click(); await page.keyboard.press('Control+End'); await page.keyboard.insertText(' synthetic');
+  await page.waitForTimeout(1300);
+  expect((await calls(page)).filter((item) => item.url.endsWith('/api/generate'))).toHaveLength(before);
+  await page.locator('#ai-toggle').click();
+  await expect(page.locator('#confirm-message')).toContainText('new-model');
+  await page.locator('#confirm-actions').getByRole('button', { name: 'Not now' }).click();
+});
+
+test('a model change while action consent is open invalidates the approval', async ({ page }) => {
+  await mockDesktop(page);
+  await page.locator('.cm-content').click(); await page.keyboard.press('Control+Home'); await page.keyboard.press('Shift+End');
+  await page.getByRole('button', { name: 'AI suggestions settings' }).click();
+  await page.locator('#ai-action-run').click();
+  await expect(page.getByRole('heading', { name: 'Send this selection to Ollama?' })).toBeVisible();
+  await page.evaluate(() => {
+    const model = document.querySelector<HTMLInputElement>('#model-name')!;
+    model.value = 'different-model'; model.dispatchEvent(new Event('change', { bubbles: true }));
+    model.value = 'qwen2.5-coder:1.5b'; model.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await page.getByRole('button', { name: 'Send and review' }).click();
+  await expect(page.locator('#ai-action-status')).toContainText('Nothing was sent');
+  expect((await calls(page)).filter((item) => item.url.endsWith('/api/generate'))).toHaveLength(0);
+  await page.locator('#ai-action-run').click();
+  await expect(page.getByRole('heading', { name: 'Send this selection to Ollama?' })).toBeVisible();
+  await page.locator('#confirm-actions').getByRole('button', { name: 'Cancel' }).click();
 });

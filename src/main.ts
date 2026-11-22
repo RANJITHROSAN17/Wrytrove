@@ -12,7 +12,8 @@ import { inspectNativeFile, LargeFileView } from './large-file-view';
 import { currentEditableFileLimit } from './large-file-policy';
 import { MAX_FILE_BYTES, decodeFile, encodeFile, sha256, type LineEnding, type TextEncoding } from './encoding';
 import { checkNativeFileChange, chooseSaveTarget, describeNativeSaveMetadata, desktop, ExternalChangeError, fileName, NativeFileTooLargeError, NativeSaveError, pickFiles, pickNativePaths, readNative, refPath, writeTo, type FileRef, type NativeSaveMetadata, type OpenedFile, type OpenFailure, type WriteOutcome } from './platform';
-import { complete, listModels, runAction, DEFAULT_MODEL } from './ai';
+import { buildCompletionRequest, complete, listModels, runAction, DEFAULT_MODEL } from './ai';
+import { AI_PROVIDERS, AiSessionConsent, aiAttemptLedger, previewAiPayload, type AiCapability } from './ai-provider';
 import { MAX_ACTION_SELECTION, buildActionRequest, getAiAction, type AiActionId } from './ai-actions';
 import { hasPartialSessionMetadata, loadSession, loadSettings, saveSession, saveSettings, type SavedDocument, type Session, type Settings } from './storage';
 import { chooseRestoreText, classifyDraft, nextJournalSequence, type DraftInput, type RecoveryRelation } from './recovery-journal';
@@ -107,8 +108,9 @@ class WrytroveApp {
   private aiCooldownUntil = 0;
   private aiPanelOpen = false;
   private aiActionId: AiActionId = 'improve';
-  private aiActionConsent = false;
-  private aiActionConsentModel = '';
+  private aiConsent = new AiSessionConsent();
+  private aiConsentEpoch = 0;
+  private aiActionPreparing = false;
   private aiActionBusy = false;
   private aiActionController: AbortController | null = null;
   private lastTitle = '';
@@ -2028,12 +2030,19 @@ class WrytroveApp {
   private async toggleAi(): Promise<void> {
     if (!desktop) { this.toast('AI suggestions run in the Windows desktop app, not the browser preview.'); return; }
     if (this.settings.aiEnabled) {
-      this.settings.aiEnabled = false; this.cancelAi(); clearGhost(this.view); this.persistSettings(); this.renderAiStatus(); return;
+      this.settings.aiEnabled = false; this.aiConsent.clear(); this.aiConsentEpoch++; this.cancelAi(); clearGhost(this.view); this.persistSettings(); this.renderAiStatus(); return;
     }
-    const choice = await this.confirm('Turn on AI suggestions?', 'As you type, up to 3,500 characters before and 1,200 after your cursor are sent to Ollama at 127.0.0.1 on this computer. Ollama can route to cloud models, so a local address alone does not guarantee on-device processing. Verify your model and Ollama configuration. Suggestions turn off when Wrytrove restarts.', [
+    const model = this.settings.model;
+    const consentEpoch = this.aiConsentEpoch;
+    try {
+      previewAiPayload({ provider: 'ollama', capability: 'inline-completion', body: buildCompletionRequest('', 0, model), sourceRevision: null, sourceCodeUnits: 0, instructionCodeUnits: 0 });
+    } catch (error) { this.toast(this.errorText(error)); return; }
+    const choice = await this.confirm('Turn on AI suggestions?', `As you type, up to 3,500 characters before and 1,200 after your cursor are sent to ${AI_PROVIDERS.ollama.endpoint} using “${model}”. Ollama can route to cloud models, so a local address alone does not guarantee on-device processing. Verify your model and Ollama configuration. Suggestions turn off when Wrytrove restarts or the model changes.`, [
       { id: 'cancel', label: 'Not now' }, { id: 'enable', label: 'Enable suggestions', style: 'primary' },
     ], 'YOUR CHOICE');
     if (choice !== 'enable') return;
+    if (model !== this.settings.model || consentEpoch !== this.aiConsentEpoch) { this.toast('The model changed. Review and enable suggestions again.'); return; }
+    this.aiConsent.grant('ollama', model, 'inline-completion');
     this.settings.aiEnabled = true; this.persistSettings(); this.renderAiStatus('On · check that Ollama is running');
     await this.checkAi();
   }
@@ -2089,6 +2098,19 @@ class WrytroveApp {
     result.hidden = !text;
   }
 
+  private async copyAiDiagnostics(): Promise<void> {
+    const output = $<HTMLTextAreaElement>('#ai-diagnostics-output');
+    output.value = aiAttemptLedger.diagnostics(); output.hidden = false;
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+      await navigator.clipboard.writeText(output.value);
+      $('#ai-diagnostics-status').textContent = 'Copied. Review before sharing; other apps may access the clipboard.';
+    } catch {
+      output.focus(); output.select();
+      $('#ai-diagnostics-status').textContent = 'Clipboard unavailable. Review the selected diagnostics and press Ctrl+C to copy.';
+    }
+  }
+
   private cancelAiAction(): void {
     if (!this.aiActionBusy) return;
     this.aiActionController?.abort();
@@ -2112,7 +2134,13 @@ class WrytroveApp {
    * or saved here.
    */
   private async runAiAction(): Promise<void> {
-    if (this.aiActionBusy) return;
+    if (this.aiActionBusy || this.aiActionPreparing) return;
+    this.aiActionPreparing = true;
+    try { await this.runAiActionRequest(); }
+    finally { this.aiActionPreparing = false; }
+  }
+
+  private async runAiActionRequest(): Promise<void> {
     const action = getAiAction(this.aiActionId);
     if (!action) return;
     if (!desktop) {
@@ -2129,23 +2157,29 @@ class WrytroveApp {
     }
     const model = this.settings.model;
     const instruction = $<HTMLInputElement>('#ai-action-instruction').value.trim();
-    try { buildActionRequest({ selection: target.original, action: action.id, instruction, model }); }
-    catch (error) { this.renderAiActionStatus(this.errorText(error), true); return; }
+    const consentEpoch = this.aiConsentEpoch;
+    const capability: AiCapability = action.kind === 'answer' ? 'selection-answer' : 'selection-edit';
+    let preview: ReturnType<typeof previewAiPayload>;
+    try {
+      const body = buildActionRequest({ selection: target.original, action: action.id, instruction, model });
+      preview = previewAiPayload({ provider: 'ollama', capability, body, sourceRevision: target.revision, sourceCodeUnits: target.original.length, instructionCodeUnits: instruction.length });
+    } catch (error) { this.renderAiActionStatus(this.errorText(error), true); return; }
 
-    if (!this.aiActionConsent || this.aiActionConsentModel !== model) {
-      const choice = await this.confirm('Send this selection to Ollama?', `“${action.label}” sends only the ${target.original.length.toLocaleString()} selected characters and your instruction to Ollama at 127.0.0.1:11434 using “${model}”. Inline suggestions may be off; this is a separate request. A loopback address does not guarantee local processing, because Ollama can route to a cloud model. Nothing is applied automatically: you review a diff first. Wrytrove asks once per session per model and sends nothing when you cancel.`, [
+    const needsConsent = !this.aiConsent.has('ollama', model, capability);
+    if (needsConsent) {
+      const choice = await this.confirm('Send this selection to Ollama?', `“${action.label}” sends ${preview.sourceCodeUnits.toLocaleString()} selected UTF-16 code units and ${preview.instructionCodeUnits.toLocaleString()} user-instruction code units to ${preview.destination} using “${preview.model}”. The JSON body is ${preview.bodyBytes.toLocaleString()} UTF-8 bytes including fixed task instructions and formatting. ${AI_PROVIDERS.ollama.warning} Inline suggestions are a separate capability. Nothing is applied automatically. Wrytrove asks once per session for this model and capability.`, [
         { id: 'cancel', label: 'Cancel' },
         { id: 'send', label: 'Send and review', style: 'primary' },
       ], 'YOUR CHOICE');
       if (choice !== 'send') { this.renderAiActionStatus('Nothing was sent.'); return; }
-      this.aiActionConsent = true;
-      this.aiActionConsentModel = model;
     }
 
-    if (!this.reviewIsCurrent(target)) {
-      this.renderAiActionStatus('The selection changed while the request was being prepared. Nothing was sent; select the text again.', true);
+    if (!this.reviewIsCurrent(target) || this.settings.model !== model || this.aiConsentEpoch !== consentEpoch || this.aiActionId !== action.id
+      || $<HTMLInputElement>('#ai-action-instruction').value.trim() !== instruction) {
+      this.renderAiActionStatus('The selection or request changed while preparing it. Nothing was sent; review it again.', true);
       return;
     }
+    if (needsConsent) this.aiConsent.grant('ollama', model, capability);
 
     const controller = new AbortController();
     this.aiActionController = controller;
@@ -2158,6 +2192,7 @@ class WrytroveApp {
     let timedOut = false;
     const timeout = window.setTimeout(() => { timedOut = true; controller.abort(); }, 60_000);
     try {
+      aiAttemptLedger.record(preview);
       const output = await runAction({ selection: target.original, action: action.id, instruction, model }, controller.signal);
       if (controller.signal.aborted) return;
       if (!output) { this.renderAiActionStatus('The model returned no usable text. Try again or choose another action.', true); return; }
@@ -2188,13 +2223,13 @@ class WrytroveApp {
     }
   }
   private scheduleAi(): void {
-    if (!desktop || !this.settings.aiEnabled || Date.now() < this.aiCooldownUntil) return;
+    if (!desktop || !this.settings.aiEnabled || !this.aiConsent.has('ollama', this.settings.model, 'inline-completion') || Date.now() < this.aiCooldownUntil) return;
     window.clearTimeout(this.aiTimer);
     this.aiTimer = window.setTimeout(() => { void this.requestAi(false); }, 1000);
   }
   private async requestAi(manual: boolean): Promise<void> {
     if (!desktop) { if (manual) this.toast('AI suggestions are available in the Windows desktop app.'); return; }
-    if (!this.settings.aiEnabled) { if (manual) { if (!this.aiPanelOpen) this.toggleAiPanel(); this.toast('Turn on AI suggestions to request a completion.'); } return; }
+    if (!this.settings.aiEnabled || !this.aiConsent.has('ollama', this.settings.model, 'inline-completion')) { if (manual) { if (!this.aiPanelOpen) this.toggleAiPanel(); this.toast('Turn on AI suggestions to request a completion.'); } return; }
     const doc = this.active; const range = doc.state.selection.main;
     if (!range.empty || doc.state.selection.ranges.length !== 1) return;
     this.cancelAi();
@@ -2209,7 +2244,12 @@ class WrytroveApp {
     const timeout = window.setTimeout(() => { timedOut = true; controller.abort(); }, 30_000);
     this.renderAiStatus('Thinking via Ollama…');
     try {
-      const suggestion = await complete(prefix + suffix, prefix.length, this.settings.model, signal);
+      const model = this.settings.model;
+      const body = buildCompletionRequest(prefix + suffix, prefix.length, model);
+      const preview = previewAiPayload({ provider: 'ollama', capability: 'inline-completion', body, sourceRevision: revision, sourceCodeUnits: body.prompt.length + (body.suffix === '\n' && !suffix.startsWith('\n') ? 0 : body.suffix.length), instructionCodeUnits: 0 });
+      if (signal.aborted || !this.aiConsent.has('ollama', model, 'inline-completion')) return;
+      aiAttemptLedger.record(preview);
+      const suggestion = await complete(prefix + suffix, prefix.length, model, signal);
       if (signal.aborted || generation !== this.aiGeneration || this.activeId !== doc.id || doc.revision !== revision || this.view.state.selection.main.head !== pos) return;
       if (suggestion) { showGhost(this.view, pos, suggestion); this.renderAiStatus('Suggestion ready · Tab to accept'); }
       else { this.renderAiStatus('No suggestion this time'); if (manual) this.toast('No suggestion this time.'); }
@@ -2329,10 +2369,20 @@ class WrytroveApp {
     $('#ai-action-run').addEventListener('click', () => { void this.runAiAction(); });
     $('#ai-action-cancel').addEventListener('click', () => this.cancelAiAction());
     $('#ai-action-copy').addEventListener('click', () => { void this.copyAiActionAnswer(); });
+    $('#ai-diagnostics-copy').addEventListener('click', () => { void this.copyAiDiagnostics(); });
+    $('#ai-diagnostics-clear').addEventListener('click', () => { aiAttemptLedger.clear(); const output = $<HTMLTextAreaElement>('#ai-diagnostics-output'); output.value = ''; output.hidden = true; $('#ai-diagnostics-status').textContent = 'Session diagnostics cleared; clipboard contents are unchanged.'; });
     $('#test-ai').addEventListener('click', () => { void this.checkAi(); });
     $('#model-name').addEventListener('change', (event) => {
-      this.settings.model = (event.target as HTMLInputElement).value.trim().slice(0, 120) || DEFAULT_MODEL;
-      this.cancelAi(); clearGhost(this.view); this.persistSettings(); this.renderAiStatus();
+      const input = event.target as HTMLInputElement;
+      const model = input.value.trim().slice(0, 120) || DEFAULT_MODEL;
+      input.value = model;
+      if (model === this.settings.model) return;
+      this.settings.model = model;
+      this.aiConsent.clear(); this.aiConsentEpoch++;
+      const wasEnabled = this.settings.aiEnabled;
+      this.settings.aiEnabled = false;
+      this.cancelAi(); this.aiActionController?.abort(); clearGhost(this.view); this.persistSettings(); this.renderAiStatus();
+      if (wasEnabled) this.toast('Model changed. Enable suggestions again after reviewing the new model.');
     });
     for (const id of ['#find-input', '#replace-input']) $(id).addEventListener('input', () => this.updateSearchQuery());
     $('#find-case').addEventListener('click', () => { this.findCase = !this.findCase; $('#find-case').setAttribute('aria-pressed', String(this.findCase)); this.updateSearchQuery(); });

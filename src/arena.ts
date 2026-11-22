@@ -1,8 +1,9 @@
 import { fetch as nativeFetch } from '@tauri-apps/plugin-http';
 import { desktop } from './platform';
 import { boundedJson } from './bounded-json';
+import { AI_PROVIDERS } from './ai-provider';
 
-export const ARENA_API_ENDPOINT = 'https://api.arena.ai/v1/chat/completions';
+export const ARENA_API_ENDPOINT = AI_PROVIDERS.arena.endpoint;
 export const ARENA_WEBSITE = 'https://arena.ai/agent';
 export const ARENA_KEYS_URL = 'https://platform.arena.ai/dashboard/keys';
 export const ARENA_PRIVACY_URL = 'https://help.arena.ai/articles/3765052346-privacy-policy';

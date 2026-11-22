@@ -160,6 +160,15 @@
             <pre id="ai-action-output" class="ai-action-output" tabindex="0" aria-label="AI answer text"></pre>
           </section>
         </section>
+        <div class="assistant-divider"></div>
+        <section aria-labelledby="ai-diagnostics-title">
+          <h3 id="ai-diagnostics-title">Session request diagnostics</h3>
+          <p class="model-note">Memory only. Counts and provider names can still be sensitive. Attempts are not proof of delivery or local processing; no prompts, selections, model names, paths or keys are included.</p>
+          <button type="button" class="outline-button" id="ai-diagnostics-copy">Show and copy redacted diagnostics</button>
+          <button type="button" class="text-button" id="ai-diagnostics-clear">Clear diagnostics</button>
+          <textarea class="text-area" id="ai-diagnostics-output" aria-label="Redacted AI diagnostics" readonly hidden></textarea>
+          <p class="dialog-status" id="ai-diagnostics-status" role="status" aria-live="polite"></p>
+        </section>
         <div class="assistant-divider"></div><h3>Arena &amp; change review</h3><p class="model-note">Use Arena in your browser, or optionally send a selected excerpt to its API.</p><button class="outline-button" data-action="arena"><span data-icon="globe"></span> Open Arena tools</button><button class="outline-button" data-action="review-change">Review a pasted change</button>
       </aside>
     </main>
