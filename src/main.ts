@@ -118,6 +118,8 @@ class WrytroveApp {
   private noteIndex = new NoteIndex();
   private indexToken = 0;
   private indexStale = true;
+  private indexEnabled = true;
+  private indexProblem: string | null = null;
   private indexBusy = false;
   private indexRefreshTimer = 0;
   private indexController: AbortController | null = null;
@@ -155,8 +157,10 @@ class WrytroveApp {
       switchDocument: (id) => this.switchDoc(id),
       openFolderNote: async (rootName, relative, template) => { await this.openFolderNote(rootName, relative, template); },
       appendToFolderNote: (rootName, relative, text, header) => this.appendToFolderNote(rootName, relative, text, header),
-      indexableFiles: (signal) => this.workbench.indexableFiles(signal),
-      onIndexChanged: () => this.invalidateNoteIndex(),
+      onIndexChanged: (workspaceChanged) => {
+        if (workspaceChanged) { this.noteIndex.clear(); this.indexProblem = null; }
+        this.invalidateNoteIndex();
+      },
     });
   }
 
@@ -990,6 +994,8 @@ class WrytroveApp {
       $(`#notes-tab-${tab}`).setAttribute('aria-selected', String(this.notesTab === tab));
       $(`#notes-view-${tab}`).hidden = this.notesTab !== tab;
     }
+    $('#index-status').textContent = this.indexStatusText();
+    $('#links-index-status').textContent = this.indexStatusText();
     // Only the visible tab is rebuilt; the other views refresh when they are selected.
     if (this.notesTab === 'tags') this.renderTags();
     if (this.notesTab === 'links') this.renderLinks();
@@ -1030,11 +1036,13 @@ class WrytroveApp {
 
   private indexStatusText(): string {
     if (this.indexBusy) return 'Indexing folder notes…';
+    if (!this.indexEnabled) return 'Index cleared. Choose “Index this folder’s notes” to enable it again.';
+    if (this.indexProblem) return `${this.noteIndex.size.toLocaleString()} notes indexed · incomplete or out of date: ${this.indexProblem} Refresh to retry.`;
     if (!this.noteIndex.size) return this.workbench.workspaceNames().length
       ? 'No folder notes indexed yet. Choose “Index this folder’s notes” to enable backlinks and the tag cloud.'
       : 'Open a folder first. The index reads only folders you chose, stays on this machine and can be cleared.';
     if (this.indexStale) return `${this.noteIndex.size.toLocaleString()} notes indexed · out of date — refresh pending.`;
-    return `${this.noteIndex.size.toLocaleString()} notes indexed locally. Nothing is uploaded.`;
+    return `${this.noteIndex.size.toLocaleString()} notes indexed locally. External changes are not watched; refresh to check for them. Nothing is uploaded.`;
   }
 
   private renderLinks(): void {
@@ -1059,7 +1067,10 @@ class WrytroveApp {
       button.title = resolved.status === 'linked' ? `Open ${resolved.match!.relative ?? resolved.match!.name}`
         : resolved.status === 'ambiguous' ? `${resolved.matches} notes share this name; open one from Quick Open`
         : 'No note in the index matches this link yet';
-      if (resolved.status === 'linked') button.addEventListener('click', () => void this.openIndexedNote(resolved.match!.name, resolved.match!.relative ?? resolved.match!.name));
+      if (resolved.status === 'linked') button.addEventListener('click', () => {
+        const match = resolved.match as (typeof candidates)[number];
+        void this.openIndexedNote(match.name, match.relative ?? match.name, undefined, match.record.rootName);
+      });
       item.append(button); outbound.append(item);
     }
 
@@ -1078,7 +1089,7 @@ class WrytroveApp {
       button.append(label);
       const line = el('span', 'link-line'); line.textContent = `L${entry.link.line + 1}`;
       button.append(line);
-      button.addEventListener('click', () => { void this.openIndexedNote(entry.record.name, entry.record.relative, entry.link.line + 1); });
+      button.addEventListener('click', () => { void this.openIndexedNote(entry.record.name, entry.record.relative, entry.link.line + 1, entry.record.rootName); });
       item.append(button); backlinks.append(item);
     }
     for (const entry of found.ambiguous.slice(0, 10)) {
@@ -1099,7 +1110,7 @@ class WrytroveApp {
       const button = el('button'); button.type = 'button';
       const label = el('span', 'link-target'); label.textContent = note.relative;
       button.append(label);
-      button.addEventListener('click', () => { void this.openIndexedNote(note.name, note.relative); });
+      button.addEventListener('click', () => { void this.openIndexedNote(note.name, note.relative, undefined, note.rootName); });
       item.append(button); orphans.append(item);
     }
   }
@@ -1108,16 +1119,15 @@ class WrytroveApp {
     if (!this.noteIndex.size) { this.toast('Index a folder first to search notes by tag.'); return; }
     const notes = this.noteIndex.tagIndex().find((entry) => entry.tag === tag)?.notes ?? [];
     if (!notes.length) { this.toast(`No indexed note is tagged #${tag}.`); return; }
-    if (notes.length === 1) { await this.openIndexedNote(notes[0].name, notes[0].relative); return; }
+    if (notes.length === 1) { await this.openIndexedNote(notes[0].name, notes[0].relative, undefined, notes[0].rootName); return; }
     const list = notes.map((note) => `• ${note.relative}`).join('\n');
     const choice = await this.confirm(`${notes.length} notes tagged #${tag}`, `${list}\n\nOpen the first one?`, [
       { id: 'cancel', label: 'Close' }, { id: 'open', label: 'Open first note', style: 'primary' },
     ], 'TAG SEARCH');
-    if (choice === 'open') await this.openIndexedNote(notes[0].name, notes[0].relative);
+    if (choice === 'open') await this.openIndexedNote(notes[0].name, notes[0].relative, undefined, notes[0].rootName);
   }
 
-  private async openIndexedNote(name: string, relative: string, line?: number): Promise<void> {
-    const rootName = this.workbench.workspaceNames()[0] ?? null;
+  private async openIndexedNote(name: string, relative: string, line?: number, rootName: string | null = null): Promise<void> {
     // `relative` already includes the extension, so it opens as-is.
     await this.openFolderNote(rootName, relative, '', line);
     void name;
@@ -1136,7 +1146,7 @@ class WrytroveApp {
   private scheduleNoteIndexRefresh(): void {
     window.clearTimeout(this.indexRefreshTimer);
     this.indexRefreshTimer = 0;
-    if (!this.notesOpen) return;
+    if (!this.notesOpen || !this.indexEnabled || !this.workbench.workspaceNames().length) return;
     this.indexRefreshTimer = window.setTimeout(() => {
       this.indexRefreshTimer = 0;
       void this.buildNoteIndex();
@@ -1144,6 +1154,7 @@ class WrytroveApp {
   }
 
   private cancelNoteIndexRefresh(): void {
+    this.indexToken++;
     window.clearTimeout(this.indexRefreshTimer);
     this.indexRefreshTimer = 0;
     this.indexController?.abort();
@@ -1151,7 +1162,9 @@ class WrytroveApp {
   }
 
   private async buildNoteIndex(force = false): Promise<void> {
-    if (!this.notesOpen || this.indexBusy) return;
+    if (force) this.indexEnabled = true;
+    if (force && this.indexBusy) { this.invalidateNoteIndex(); return; }
+    if (!this.notesOpen || this.indexBusy || !this.indexEnabled) return;
     if (!force && this.noteIndex.size && !this.indexStale) return;
     this.indexBusy = true;
     const controller = new AbortController();
@@ -1160,15 +1173,27 @@ class WrytroveApp {
     let failure: string | null = null;
     this.renderTags();
     try {
-      const files = await this.workbench.indexableFiles(controller.signal);
+      const scan = await this.workbench.indexableFiles(controller.signal);
       if (controller.signal.aborted || token !== this.indexToken || !this.notesOpen) return;
       const next = new NoteIndex();
-      for (const file of files) next.set({ name: file.name, relative: file.relative, rootName: file.rootName }, file.text);
-      this.noteIndex = next;
-      this.indexStale = false;
+      for (const file of scan.files) {
+        try { next.set({ name: file.name, relative: file.relative, rootName: file.rootName }, file.text); }
+        catch (error) {
+          scan.skipped++;
+          if (scan.issues.length < 8) scan.issues.push(`${file.rootName}/${file.relative}: ${this.errorText(error)}`);
+        }
+      }
+      const incomplete = scan.truncated || scan.skipped > 0 || scan.issues.length > 0;
+      // A partial snapshot cannot prove old records were deleted. Preserve them until a complete scan.
+      if (incomplete) this.noteIndex.mergeFrom(next);
+      else this.noteIndex = next;
+      this.indexStale = incomplete;
+      this.indexProblem = incomplete ? [scan.truncated ? 'scan limit reached' : '', scan.skipped ? `${scan.skipped} items skipped` : '', ...scan.issues].filter(Boolean).join('; ') : null;
     } catch (error) {
       if (controller.signal.aborted || token !== this.indexToken || !this.notesOpen) return;
-      failure = `Could not index folder notes: ${this.errorText(error)}`;
+      this.indexStale = true;
+      this.indexProblem = `Could not index folder notes: ${this.errorText(error)}`;
+      failure = this.indexProblem;
     } finally {
       if (this.indexController === controller) this.indexController = null;
       this.indexBusy = false;
@@ -1176,6 +1201,7 @@ class WrytroveApp {
         this.renderTags();
         this.renderLinks();
         $('#index-status').textContent = failure ?? this.indexStatusText();
+        $('#links-index-status').textContent = failure ?? this.indexStatusText();
         // A save or panel action invalidated this scan while it was running; coalesce into one more pass.
         if (token !== this.indexToken) this.scheduleNoteIndexRefresh();
       }
@@ -1865,7 +1891,7 @@ class WrytroveApp {
       case 'tab-outline': this.showTabOutline(); break;
       case 'notes-panel': case 'sidebar-notes': this.toggleNotesPanel(); break;
       case 'build-index': void this.buildNoteIndex(true); break;
-      case 'clear-index': this.noteIndex.clear(); this.indexStale = true; this.toast('The local note index was cleared. Nothing on disk was changed.'); this.renderNotesPanel(); break;
+      case 'clear-index': this.indexEnabled = false; this.cancelNoteIndexRefresh(); this.noteIndex.clear(); this.indexStale = true; this.indexProblem = null; this.toast('The local note index was cleared. Nothing on disk was changed.'); this.renderNotesPanel(); break;
       case 'focus-mode': this.toggleFocus('focus'); break;
       case 'typewriter-mode': this.toggleFocus('typewriter'); break;
       case 'zen-mode': this.toggleFocus('zen'); break;

@@ -7,9 +7,9 @@ import { sha256, encodeFile, decodeFile } from './encoding';
 import { isSafeRelativePath } from './daily';
 import { ExternalChangeError, writeTo, type FileRef, type NativeSaveMetadata, type OpenedFile } from './platform';
 import { shouldInvalidateIndexOnSave } from './note-index';
-import { MAX_SEARCH_FILE_BYTES, MAX_WORKSPACE_ROOTS, createWorkspaceEntry, listWorkspaceDirectory, readWorkspaceFile, pickWorkspace, rankWorkspaceFiles, searchWorkspace, walkWorkspace, type DirectoryListing, type NewWorkspaceEntryKind, type SearchResult, type WalkProgress, type WorkspaceDirectory, type WorkspaceFile } from './workspace';
+import { scanNoteRoots, type NoteScan } from './note-index-scan';
+import { MAX_WORKSPACE_ROOTS, createWorkspaceEntry, listWorkspaceDirectory, readWorkspaceFile, pickWorkspace, rankWorkspaceFiles, searchWorkspace, walkWorkspace, type DirectoryListing, type NewWorkspaceEntryKind, type SearchResult, type WalkProgress, type WorkspaceDirectory, type WorkspaceFile } from './workspace';
 
-const INDEXABLE_EXTENSIONS = /\.(?:md|markdown|mdown|mkd|mdx|txt|text|kanban)$/iu;
 type IterableDirectory = FileSystemDirectoryHandle & { values(): AsyncIterableIterator<FileSystemHandle> };
 const $ = <T extends HTMLElement = HTMLElement>(selector: string): T => {
   const value = document.querySelector<T>(selector);
@@ -38,9 +38,8 @@ export interface WorkbenchHost {
   openFolderNote(rootName: string | null, relative: string, template: string): Promise<void>;
   /** Append text to a note at a folder-relative path, creating it when absent. */
   appendToFolderNote(rootName: string | null, relative: string, text: string, header?: string): Promise<void>;
-  /** Files available to the note index: every note in every open folder. */
-  indexableFiles(signal?: AbortSignal): Promise<{ name: string; relative: string; rootName: string; text: string }[]>;
-  onIndexChanged(): void;
+  /** Notify the host after a workspace change or successful folder write. */
+  onIndexChanged(workspaceChanged?: boolean): void;
   listOpenDocuments(): OpenDocument[];
   recentPaths(): string[];
   switchDocument(id: string): void;
@@ -171,6 +170,7 @@ export class Workbench {
       this.quickController?.abort(); this.quickGeneration++;
       const root: WorkspaceRootState = { id: ++this.rootSequence, folder: selected, listings: new Map(), expanded: new Set(), rootExpanded: true };
       this.roots.push(root);
+      this.host.onIndexChanged(true);
       const generation = ++this.folderGeneration;
       this.updateWorkspaceHeading();
       $('#workspace-tree-status').textContent = `Loading ${selected.name}…`;
@@ -189,7 +189,9 @@ export class Workbench {
 
   private closeFolder(showMessage = true): void {
     this.invalidateWorkspaceSearch(''); this.quickController?.abort(); this.quickGeneration++;
+    const hadRoots = this.roots.length > 0;
     this.folderGeneration++; this.roots = [];
+    if (hadRoots) this.host.onIndexChanged(true);
     this.updateWorkspaceHeading();
     $('#workspace-tree').replaceChildren(); $('#workspace-tree-status').textContent = '';
     if (showMessage) this.host.toast('Workspace closed. Open files remain open. Previously granted desktop access may still be stored.');
@@ -198,6 +200,7 @@ export class Workbench {
   private removeRoot(root: WorkspaceRootState): void {
     if (!this.roots.includes(root)) return;
     this.folderGeneration++; this.roots = this.roots.filter((item) => item !== root);
+    this.host.onIndexChanged(true);
     this.invalidateWorkspaceSearch('Workspace changed; run the search again.');
     this.quickController?.abort(); this.quickGeneration++;
     this.updateWorkspaceHeading(); this.renderTree();
@@ -207,6 +210,7 @@ export class Workbench {
   private async refreshFolder(): Promise<void> {
     if (!this.roots.length) return;
     const generation = ++this.folderGeneration;
+    this.host.onIndexChanged();
     this.invalidateWorkspaceSearch('Folder view refreshed; run the search again.');
     this.quickController?.abort(); this.quickGeneration++;
     for (const root of this.roots) { root.listings.clear(); root.expanded.clear(); root.rootExpanded = true; }
@@ -889,37 +893,21 @@ export class Workbench {
     return { file: existing, created: false, rootName: root.folder.name, nativeMetadata };
   }
 
-  /** Every note in every open folder, read through the bounded workspace path. */
-  async indexableFiles(signal?: AbortSignal): Promise<{ name: string; relative: string; rootName: string; text: string }[]> {
-    const out: { name: string; relative: string; rootName: string; text: string }[] = [];
-    for (const root of this.roots) {
-      if (signal?.aborted) break;
-      try {
-        await walkWorkspace(root.folder, async (entry) => {
-          if (signal?.aborted) return false;
-          if (!INDEXABLE_EXTENSIONS.test(entry.name)) return;
-          if (out.length >= 1_000) return false;
-          try {
-            const opened = await readWorkspaceFile(entry, MAX_SEARCH_FILE_BYTES);
-            if (signal?.aborted) return false;
-            out.push({ name: entry.name, relative: entry.relative, rootName: root.folder.name, text: decodeFile(opened.bytes).text });
-          } catch { /* An unreadable note is skipped; the index reports what it could read. */ }
-        }, { signal });
-      } catch { /* A folder that cannot be walked contributes nothing. */ }
-    }
-    return out;
+  /** Every note in every open folder, with explicit bounded-scan diagnostics. */
+  async indexableFiles(signal?: AbortSignal): Promise<NoteScan> {
+    return scanNoteRoots(this.roots.map((root) => root.folder), signal);
   }
 
   /** Re-list one root's top level so a newly created note appears in the tree immediately. */
   private async refreshRoot(root: WorkspaceRootState): Promise<void> {
     if (!this.roots.includes(root)) return;
     const generation = this.folderGeneration;
+    this.host.onIndexChanged();
     try {
       root.listings.clear();
       root.listings.set('', await listWorkspaceDirectory(root.folder));
       if (generation !== this.folderGeneration) return;
       this.renderTree();
-      this.host.onIndexChanged();
     } catch { /* A refresh failure must not undo a successful write. */ }
   }
 

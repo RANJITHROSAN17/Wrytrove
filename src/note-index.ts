@@ -106,12 +106,17 @@ export class NoteIndex {
     this.progress = { files: 0, read: 0, skipped: 0, issues: [], truncated: false };
   }
 
+  /** Preserve known-good records when a partial scan cannot establish what was removed. */
+  mergeFrom(other: NoteIndex): void {
+    for (const [id, record] of other.records) this.records.set(id, record);
+  }
+
   get size(): number { return this.records.size; }
   get lastProgress(): IndexProgress { return { ...this.progress, issues: [...this.progress.issues] }; }
   all(): NoteRecord[] { return [...this.records.values()]; }
 
   private static id(rootName: string, relative: string): string {
-    return `${rootName}/${relative}`.toLowerCase();
+    return JSON.stringify([rootName, relative]);
   }
 
   set(file: { name: string; relative: string; rootName: string }, text: string): void {
@@ -123,8 +128,8 @@ export class NoteIndex {
     this.records.delete(NoteIndex.id(rootName, relative));
   }
 
-  candidates(): NoteCandidate[] {
-    return this.all().map((record) => ({ name: record.name, relative: record.relative }));
+  candidates(): IndexedNote[] {
+    return this.all().map((record) => ({ name: record.name, relative: record.relative, record }));
   }
 
   /**
@@ -159,7 +164,8 @@ export class NoteIndex {
         // Only a unique match counts. An ambiguous link links nothing, so a reader is never told
         // a note is connected when Wrytrove cannot tell which note was meant.
         for (const candidate of uniqueMatches(link.target, candidates)) {
-          linked.add(NoteIndex.id(record.rootName, candidate.relative ?? candidate.name));
+          const matched = candidate as IndexedNote;
+          linked.add(NoteIndex.id(matched.record.rootName, matched.record.relative));
         }
       }
     }
