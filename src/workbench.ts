@@ -1,6 +1,7 @@
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { desktop, fileName } from './platform';
 import { MAX_REVIEW_CHARS, makeReviewTarget, normalizeReplacement, reviewDiff, summarizeReviewDiff, type ReviewTarget } from './change-review';
+import { aiAttemptLedger, previewAiPayload } from './ai-provider';
 import { ARENA_API_ENDPOINT, ARENA_KEYS_URL, ARENA_PRIVACY_URL, ARENA_WEBSITE, MAX_ARENA_CONTEXT, buildArenaRequest, buildBrowserPrompt, requestArenaBatch, type ArenaMode, type ArenaRequest } from './arena';
 import { findPotentialSecrets } from './sensitive-text';
 import { sha256, encodeFile, decodeFile } from './encoding';
@@ -681,13 +682,14 @@ export class Workbench {
     };
     const compare = $<HTMLInputElement>('#arena-compare').checked;
     const requests = compare ? [request, { ...request, model: $<HTMLInputElement>('#arena-model-second').value }] : [request];
+    let previews: ReturnType<typeof previewAiPayload>[];
     try {
-      requests.forEach(buildArenaRequest);
+      previews = requests.map((item) => previewAiPayload({ provider: 'arena', capability: mode === 'edit' ? 'arena-edit' : 'arena-ask', body: buildArenaRequest(item), sourceRevision: target?.revision ?? null, sourceCodeUnits: item.selection.length, instructionCodeUnits: item.instruction.trim().length }));
       if (requests.length === 2 && requests[0].model.trim() === requests[1].model.trim()) throw new Error('Choose two different model IDs to compare.');
     } catch (error) { $('#arena-status').textContent = this.error(error); return; }
     const findings = this.updateSensitiveWarning();
     const safetyNotice = findings.length ? ` Possible sensitive content detected: ${findings.join(', ')}. The check can be mistaken or incomplete; review the exact text before sending.` : ' The automatic credential check is incomplete; review the exact text for sensitive data before sending.';
-    const modelNames = requests.map((item) => `“${item.model.trim()}”`).join(' and ');
+    const modelNames = previews.map((item) => `“${item.model}” (${item.bodyBytes.toLocaleString()} UTF-8 JSON bytes)`).join(' and ');
     const choice = await this.host.confirm(compare ? 'Send two requests to Arena?' : 'Send request to Arena?',
       `Send your ${mode === 'edit' ? 'edit instruction' : 'question'} and ${request.selection.length.toLocaleString()} captured characters to ${ARENA_API_ENDPOINT} using ${modelNames}. ${compare ? 'This makes two separate requests, and both may incur charges. ' : ''}This is a cloud service; API charges, provider sharing and retention depend on your Arena account and terms. Wrytrove does not add file paths or other files, but your text may contain them.${safetyNotice}`,
       [{ id: 'cancel', label: 'Cancel' }, { id: 'send', label: compare ? 'Send both requests' : 'Send to Arena', style: 'primary' }], 'EXPLICIT CLOUD CONSENT');
@@ -705,6 +707,7 @@ export class Workbench {
     this.clearArenaResults(); this.setArenaBusy(true);
     $('#arena-status').textContent = compare ? 'Waiting for two Arena responses…' : 'Waiting for Arena…';
     try {
+      for (const preview of previews) aiAttemptLedger.record(preview);
       const responses = await requestArenaBatch(requests, controller.signal);
       if (this.arenaController !== controller) return;
       if (controller.signal.aborted) { $('#arena-status').textContent = timedOut ? 'Arena request timed out.' : 'Arena request cancelled.'; return; }

@@ -1,6 +1,7 @@
 import { fetch as nativeFetch } from '@tauri-apps/plugin-http';
 import { desktop } from './platform';
 import { boundedJson } from './bounded-json';
+import { AI_PROVIDERS } from './ai-provider';
 import { buildActionRequest, cleanActionOutput, getAiAction, type AiActionId } from './ai-actions';
 
 export const DEFAULT_MODEL = 'qwen2.5-coder:1.5b';
@@ -58,7 +59,7 @@ export async function listModels(signal?: AbortSignal): Promise<string[]> {
 
 export async function complete(text: string, cursor: number, model: string, signal?: AbortSignal): Promise<string> {
   if (!desktop) throw new Error('AI is available in the Windows desktop app, not this browser preview.');
-  const response = await nativeFetch(`${ENDPOINT}/api/generate`, {
+  const response = await nativeFetch(AI_PROVIDERS.ollama.endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(buildCompletionRequest(text, cursor, model)),
@@ -84,7 +85,7 @@ export async function runAction(
 ): Promise<string> {
   if (!desktop) throw new Error('AI actions are available in the Windows desktop app, not this browser preview.');
   const body = buildActionRequest(input);
-  const response = await nativeFetch(`${ENDPOINT}/api/generate`, {
+  const response = await nativeFetch(AI_PROVIDERS.ollama.endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
