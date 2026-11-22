@@ -1,19 +1,20 @@
 import { expect, test, type Page } from '@playwright/test';
 
-async function freshProject(page: Page, multiRoot = false) {
-  await page.addInitScript((multi) => {
+async function freshProject(page: Page, multiRoot = false, inbox = false) {
+  await page.addInitScript(({ multi, inbox }) => {
     type Handle = { kind: 'file' | 'directory'; name: string; [key: string]: unknown };
-    const win = window as Window & { __projectWrites?: number; __projectCreates?: number };
+    const win = window as Window & { __projectWrites?: number; __projectCreates?: number; __inboxText?: () => string; __holdWrite?: boolean; __releaseWrite?: () => void; __failReadAfterWrite?: boolean };
     win.__projectWrites = 0; win.__projectCreates = 0;
     const file = (name: string, initial: string): Handle => {
       let text = initial;
+      if (name === 'Inbox.md') win.__inboxText = () => text;
       const handle: Handle = {
         kind: 'file', name,
-        getFile: async () => new File([text], name),
+        getFile: async () => { if (name === 'Inbox.md' && win.__failReadAfterWrite && win.__projectWrites) throw new Error('Read blocked'); return new File([text], name); },
         isSameEntry: async (other: unknown) => other === handle,
         createWritable: async () => {
           let next = '';
-          return { write: async (value: Uint8Array) => { next = new TextDecoder().decode(value); }, close: async () => { text = next; win.__projectWrites = (win.__projectWrites || 0) + 1; }, abort: async () => {} };
+          return { write: async (value: Uint8Array) => { next = new TextDecoder().decode(value); }, close: async () => { if (name === 'Inbox.md' && win.__holdWrite) await new Promise<void>((resolve) => { win.__releaseWrite = resolve; }); text = next; win.__projectWrites = (win.__projectWrites || 0) + 1; }, abort: async () => {} };
         },
       };
       return handle;
@@ -56,11 +57,12 @@ async function freshProject(page: Page, multiRoot = false) {
       dir('docs', [file('readme.md', 'needle in docs'), file('shared.txt', 'docs copy')]),
       dir('node_modules', [file('skip.ts', 'needle in dependencies')]),
       file('top.txt', 'some note'),
+      ...(inbox ? [file('Inbox.md', 'Existing note')] : []),
     ]);
     const second = dir('docs-project', [file('guide.md', 'Needle from the other project'), dir('notes', [file('ideas.txt', 'other notes')])]);
     let pick = 0;
     Object.defineProperty(window, 'showDirectoryPicker', { value: async () => multi && pick++ === 1 ? second : root });
-  }, multiRoot);
+  }, { multi: multiRoot, inbox });
   await page.goto('/');
   await expect(page.locator('.cm-content')).toBeVisible();
   await expect(page.locator('#app')).not.toHaveAttribute('inert', '');
@@ -138,6 +140,54 @@ test('quick capture creates and appends exactly once while its first write is in
   await expect(page.locator('#toast')).toContainText('Captured to a new Inbox.md.');
   expect(await page.evaluate(() => (window as Window & { __projectCreates?: number }).__projectCreates)).toBe(1);
   expect(await page.evaluate(() => (window as Window & { __projectWrites?: number }).__projectWrites)).toBe(1);
+});
+
+async function startCapture(page: Page, text: string) {
+  await page.locator('[data-menu="notes"]').click();
+  await page.locator('[data-menu-panel="notes"] [data-action="quick-capture"]').click();
+  await page.locator('#capture-text').fill(text);
+  await page.locator('#capture-submit').click();
+}
+
+test('capture keeps an open browser draft and the next save detects the disk conflict', async ({ page }) => {
+  await freshProject(page, false, true); await openFolder(page);
+  await page.getByRole('button', { name: 'Open Inbox.md' }).click();
+  await page.locator('.cm-content').click(); await page.keyboard.press('Control+End'); await page.keyboard.insertText(' local draft');
+  await startCapture(page, 'Captured thought');
+  await expect(page.locator('#capture-dialog')).not.toHaveAttribute('open', '');
+  await expect(page.locator('#toast')).toContainText('open tab was not updated');
+  await expect(page.locator('.cm-content')).toContainText('Existing note local draft');
+  await expect(page.locator('#toolbar-dirty')).toBeVisible();
+  expect(await page.evaluate(() => (window as unknown as { __inboxText: () => string }).__inboxText())).toContain('Captured thought');
+  await page.keyboard.press('Control+s');
+  await expect(page.getByRole('heading', { name: 'File changed on disk' })).toBeVisible();
+  await page.locator('#confirm-actions').getByRole('button', { name: 'Cancel' }).click();
+  expect(await page.evaluate(() => (window as unknown as { __inboxText: () => string }).__inboxText())).toContain('Captured thought');
+});
+
+test('capture preserves edits made while the append is in flight', async ({ page }) => {
+  await freshProject(page, false, true); await openFolder(page);
+  await page.getByRole('button', { name: 'Open Inbox.md' }).click();
+  await page.evaluate(() => { (window as unknown as { __holdWrite: boolean }).__holdWrite = true; });
+  await startCapture(page, 'Captured while editing');
+  await expect.poll(() => page.evaluate(() => typeof (window as Window & { __releaseWrite?: () => void }).__releaseWrite)).toBe('function');
+  await page.evaluate(() => document.querySelector<HTMLDialogElement>('#capture-dialog')!.close());
+  await page.locator('.cm-content').click(); await page.keyboard.press('Control+End'); await page.keyboard.insertText(' later draft');
+  await page.evaluate(() => { (window as unknown as { __releaseWrite: () => void }).__releaseWrite(); });
+  await expect(page.locator('#toast')).toContainText('open tab was not updated');
+  await expect(page.locator('.cm-content')).toContainText('Existing note later draft');
+  await expect(page.locator('#toolbar-dirty')).toBeVisible();
+  expect(await page.evaluate(() => (window as unknown as { __inboxText: () => string }).__inboxText())).toContain('Captured while editing');
+});
+
+test('a post-commit read failure does not offer an accidental capture retry', async ({ page }) => {
+  await freshProject(page); await openFolder(page);
+  await page.evaluate(() => { (window as unknown as { __failReadAfterWrite: boolean }).__failReadAfterWrite = true; });
+  await startCapture(page, 'Saved despite read failure');
+  await expect(page.locator('#capture-dialog')).not.toHaveAttribute('open', '');
+  await expect(page.locator('#toast')).toContainText('Could not open or update the note view');
+  expect(await page.evaluate(() => (window as unknown as { __projectWrites: number }).__projectWrites)).toBe(1);
+  expect(await page.evaluate(() => (window as unknown as { __inboxText: () => string }).__inboxText())).toContain('Saved despite read failure');
 });
 
 test('quick open, go to line and the command palette work with keyboard shortcuts', async ({ page }) => {

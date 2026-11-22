@@ -130,3 +130,50 @@ test('an unreadable disk file does not silently appear unchanged', async ({ page
   await expect(page.getByRole('button', { name: 'Reload from disk' })).toBeHidden();
   await expect(page.locator('.cm-content')).toContainText('original file');
 });
+
+test('native capture leaves an open dirty note intact and retains its old save identity', async ({ page }) => {
+  await page.addInitScript(() => {
+    type State = Window & { isTauri: boolean; __diskText: string; __writes: number; __writeIdentity?: string; __TAURI_INTERNALS__: unknown };
+    const win = window as unknown as State;
+    win.isTauri = true; win.__diskText = 'native original'; win.__writes = 0;
+    let identity = '0123456789abcdef0123456789abcdef';
+    let next = 0;
+    win.__TAURI_INTERNALS__ = {
+      metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main' } },
+      transformCallback: () => ++next,
+      invoke: async (command: string, args: unknown, options?: { headers?: Record<string, string> }) => {
+        if (command === 'take_launch_files') return ['C:\\notes\\Inbox.md'];
+        if (command === 'plugin:event|listen') return ++next;
+        if (command === 'plugin:dialog|open') return 'C:\\notes';
+        if (command === 'plugin:fs|lstat') return { isDirectory: true, isFile: false, isSymlink: false, mtime: null, atime: null, birthtime: null };
+        if (command === 'workspace_list_directory') return { entries: [{ name: 'Inbox.md', isFile: true, isDirectory: false }], skippedLinks: 0, truncated: false };
+        if (command === 'workspace_read_file') return new TextEncoder().encode(identity + win.__diskText).buffer;
+        if (command === 'safe_write') {
+          win.__writes++; win.__writeIdentity = options?.headers?.['x-wrytrove-identity'];
+          if (win.__writes > 1) throw { phase: 'revalidate', kind: 'conflict', message: 'changed' };
+          win.__diskText = new TextDecoder().decode(args as Uint8Array);
+          identity = 'fedcba9876543210fedcba9876543210';
+          return { phase: 'committed', identity };
+        }
+        return undefined;
+      },
+    };
+  });
+  await page.goto('/');
+  await expect(page.locator('.cm-content')).toContainText('native original');
+  await page.locator('#sidebar [data-action="open-folder"]').click();
+  await page.getByRole('button', { name: 'Choose folder', exact: true }).click();
+  await expect(page.locator('#workspace-name')).toHaveText('notes');
+  await page.locator('.cm-content').click(); await page.keyboard.press('Control+End'); await page.keyboard.insertText(' unsaved draft');
+  await page.locator('[data-menu="notes"]').click();
+  await page.locator('[data-menu-panel="notes"] [data-action="quick-capture"]').click();
+  await page.locator('#capture-text').fill('native capture');
+  await page.locator('#capture-submit').click();
+  await expect(page.locator('#toast')).toContainText('open tab was not updated');
+  await expect(page.locator('.cm-content')).toContainText('native original unsaved draft');
+  await expect(page.locator('#disk-change-warning')).toContainText('unsaved edits are preserved');
+  expect(await page.evaluate(() => (window as unknown as { __diskText: string }).__diskText)).toContain('native capture');
+  await page.keyboard.press('Control+s');
+  await expect(page.getByRole('heading', { name: 'File changed on disk' })).toBeVisible();
+  expect(await page.evaluate(() => (window as unknown as { __writeIdentity: string }).__writeIdentity)).toBe('0123456789abcdef0123456789abcdef');
+});
