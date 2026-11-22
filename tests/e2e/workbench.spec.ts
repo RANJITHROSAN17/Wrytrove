@@ -3,14 +3,14 @@ import { expect, test, type Page } from '@playwright/test';
 async function freshProject(page: Page, multiRoot = false, inbox = false) {
   await page.addInitScript(({ multi, inbox }) => {
     type Handle = { kind: 'file' | 'directory'; name: string; [key: string]: unknown };
-    const win = window as Window & { __projectWrites?: number; __projectCreates?: number; __inboxText?: () => string; __holdWrite?: boolean; __releaseWrite?: () => void; __failReadAfterWrite?: boolean; __createInboxAfterListing?: boolean };
+    const win = window as Window & { __projectWrites?: number; __projectCreates?: number; __inboxText?: () => string; __holdWrite?: boolean; __releaseWrite?: () => void; __failReadAfterWrite?: boolean; __createInboxAfterListing?: boolean; __holdIndexRead?: boolean; __releaseIndexRead?: () => void; __failIndexRead?: boolean; __setInboxText?: (text: string) => void };
     win.__projectWrites = 0; win.__projectCreates = 0;
     const file = (name: string, initial: string): Handle => {
       let text = initial;
-      if (name === 'Inbox.md') win.__inboxText = () => text;
+      if (name === 'Inbox.md') { win.__inboxText = () => text; win.__setInboxText = (value) => { text = value; }; }
       const handle: Handle = {
         kind: 'file', name,
-        getFile: async () => { if (name === 'Inbox.md' && win.__failReadAfterWrite && win.__projectWrites) throw new Error('Read blocked'); return new File([text], name); },
+        getFile: async () => { if (name === 'Inbox.md' && win.__holdIndexRead) await new Promise<void>((resolve) => { win.__releaseIndexRead = resolve; }); if (name === 'Inbox.md' && (win.__failIndexRead || (win.__failReadAfterWrite && win.__projectWrites))) throw new Error('Read blocked'); return new File([text], name); },
         isSameEntry: async (other: unknown) => other === handle,
         createWritable: async () => {
           let next = '';
@@ -400,4 +400,41 @@ test('compact workspace keeps tree and open-file headings separate and scrollabl
   expect(boxes.list.height).toBeGreaterThanOrEqual(38);
   await page.locator('#file-list').scrollIntoViewIfNeeded();
   await expect(page.locator('#file-list')).toBeVisible();
+});
+
+
+test('partial note scans retain known records and warn in both tags and links', async ({ page }) => {
+  await freshProject(page, false, true); await openFolder(page);
+  await page.evaluate(() => (window as any).__setInboxText('#remember [[readme]]'));
+  await page.locator('#notes-chip').click();
+  await page.locator('#notes-tab-tags').click();
+  await expect(page.locator('#all-tags')).toContainText('#remember');
+  await page.evaluate(() => { (window as any).__failIndexRead = true; });
+  await page.locator('#workspace-refresh').click();
+  await expect(page.locator('#index-status')).toContainText('Inbox.md: Read blocked');
+  await expect(page.locator('#all-tags')).toContainText('#remember');
+  await page.locator('#notes-tab-links').click();
+  await expect(page.locator('#links-index-status')).toContainText('incomplete or out of date');
+});
+
+test('clearing or closing a workspace prevents an in-flight scan from publishing', async ({ page }) => {
+  await freshProject(page, false, true); await openFolder(page);
+  await page.evaluate(() => { (window as any).__holdIndexRead = true; });
+  await page.locator('#notes-chip').click();
+  await page.locator('#notes-tab-tags').click();
+  await expect.poll(() => page.evaluate(() => typeof (window as any).__releaseIndexRead)).toBe('function');
+  await page.locator('[data-menu="notes"]').click();
+  await page.locator('[data-menu-panel="notes"] [data-action="clear-index"]').click();
+  await page.evaluate(() => { (window as any).__holdIndexRead = false; (window as any).__releaseIndexRead(); });
+  await expect(page.locator('#index-status')).toContainText('Index cleared');
+  await expect(page.locator('#all-tags')).toBeEmpty();
+  await page.locator('#index-notes-button').click();
+  await expect(page.locator('#index-status')).toContainText('indexed');
+  await page.evaluate(() => { (window as any).__holdIndexRead = true; (window as any).__releaseIndexRead = undefined; });
+  await page.locator('#workspace-refresh').click();
+  await expect.poll(() => page.evaluate(() => typeof (window as any).__releaseIndexRead)).toBe('function');
+  await page.locator('#workspace-close').click();
+  await page.evaluate(() => { (window as any).__holdIndexRead = false; (window as any).__releaseIndexRead(); });
+  await expect(page.locator('#index-status')).toContainText('Open a folder first');
+  await expect(page.locator('#all-tags')).toBeEmpty();
 });
