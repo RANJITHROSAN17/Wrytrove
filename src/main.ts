@@ -32,7 +32,8 @@ import { countTextStats, describeStats, isLargeDocument, type TextStats } from '
 import { DailyGoalTracker, loadGoalState, saveGoalState } from './goal';
 import { extractOutline, headingAt, isMarkdownName, rankHeadings, type Heading } from './outline';
 import { collectTags, extractWikiLinks, resolveWikiTarget } from './notes';
-import { NoteIndex } from './note-index';
+import { INDEXABLE_EXTENSIONS, MAX_INDEX_FILE_BYTES, NoteIndex } from './note-index';
+import { CoalescingQueue, resolveSavedNote, type SavedNoteTarget } from './note-index-update';
 import { buildMinimapBars, minimapAvailable, viewportFraction } from './minimap';
 import { focusAnnouncement, focusClassList, focusLabel, isAnyFocusActive, FOCUS_CLASSES, type FocusSettings } from './focus-mode';
 import { DEFAULT_CAPTURE_SNIPPET, DEFAULT_DAILY_TEMPLATE, MAX_CAPTURE_CHARS, expandDailyTemplate, humanDate, isoTime, dailyNotePath, isSafeRelativePath } from './daily';
@@ -118,11 +119,19 @@ class WrytroveApp {
   private noteIndex = new NoteIndex();
   private indexToken = 0;
   private indexStale = true;
+  private indexNeedsRefresh = true;
   private indexEnabled = true;
   private indexProblem: string | null = null;
   private indexBusy = false;
   private indexRefreshTimer = 0;
   private indexController: AbortController | null = null;
+  private indexSnapshot = false;
+  private indexUpdateFailures = new Map<string, string>();
+  private indexUpdateFailureOverflow = false;
+  private indexUpdates = new CoalescingQueue<string | FileSystemFileHandle, { ref: FileRef; digest: string }>(
+    async (_key, value, current) => this.updateSavedNote(value.ref, value.digest, current),
+    () => this.renderNotesPanel(), NOTE_INDEX_REFRESH_DELAY_MS,
+  );
   private goalTracker = new DailyGoalTracker(loadGoalState());
   private statsTimer = 0;
   private stats: TextStats = countTextStats('');
@@ -158,7 +167,7 @@ class WrytroveApp {
       openFolderNote: async (rootName, relative, template) => { await this.openFolderNote(rootName, relative, template); },
       appendToFolderNote: (rootName, relative, text, header) => this.appendToFolderNote(rootName, relative, text, header),
       onIndexChanged: (workspaceChanged) => {
-        if (workspaceChanged) { this.noteIndex.clear(); this.indexProblem = null; }
+        if (workspaceChanged) { this.noteIndex.clear(); this.indexProblem = null; this.indexSnapshot = false; this.indexUpdateFailures.clear(); this.indexUpdateFailureOverflow = false; }
         this.invalidateNoteIndex();
       },
     });
@@ -749,7 +758,7 @@ class WrytroveApp {
       doc.savedDoc = textAtSave; doc.savedEncoding = encodingAtSave; doc.savedLineEnding = endingAtSave; doc.mixedLineEndings = false;
       this.renderAll(); if (doc.id === this.activeId) void this.applyLanguage();
       this.scheduleRecovery();
-      if (await this.workbench.savedFileIsInOpenFolder(doc.ref)) this.invalidateNoteIndex();
+      this.enqueueSavedNote(target.ref, outcome.digest);
       this.toast(target.ref.kind === 'download' ? 'A copy was downloaded. Browser preview cannot overwrite the original file.' : `Saved ${doc.name}.`);
       return true;
     } catch (error) {
@@ -1036,8 +1045,11 @@ class WrytroveApp {
 
   private indexStatusText(): string {
     if (this.indexBusy) return 'Indexing folder notes…';
+    if (this.indexUpdates.busy) return 'Updating saved notes… The index may be incomplete or out of date.';
     if (!this.indexEnabled) return 'Index cleared. Choose “Index this folder’s notes” to enable it again.';
-    if (this.indexProblem) return `${this.noteIndex.size.toLocaleString()} notes indexed · incomplete or out of date: ${this.indexProblem} Refresh to retry.`;
+    const updateProblems = [...this.indexUpdateFailures.values()];
+    if (this.indexUpdateFailureOverflow) updateProblems.push('additional saved notes could not be updated');
+    if (this.indexProblem || updateProblems.length) return `${this.noteIndex.size.toLocaleString()} notes indexed · incomplete or out of date: ${[this.indexProblem, ...updateProblems.slice(0, 8)].filter(Boolean).join('; ')} Refresh to retry.`;
     if (!this.noteIndex.size) return this.workbench.workspaceNames().length
       ? 'No folder notes indexed yet. Choose “Index this folder’s notes” to enable backlinks and the tag cloud.'
       : 'Open a folder first. The index reads only folders you chose, stays on this machine and can be cleared.';
@@ -1133,10 +1145,54 @@ class WrytroveApp {
     void name;
   }
 
+  /** Queue only committed saves. Read and verify the saved bytes before replacing an indexed record. */
+  private enqueueSavedNote(ref: FileRef, digest: string): void {
+    if (!this.indexEnabled || ref.kind === 'download' || !this.workbench.workspaceNames().length) return;
+    const name = ref.kind === 'native' ? fileName(ref.path) : ref.handle.name;
+    if (!INDEXABLE_EXTENSIONS.test(name)) return;
+    if (!this.indexSnapshot || this.indexBusy || this.indexRefreshTimer) { this.invalidateNoteIndex(); return; }
+    const key = ref.kind === 'browser' ? ref.handle : /^(?:[a-z]:[\\/]|\\\\)/iu.test(ref.path) ? ref.path.replace(/\\/gu, '/').toLowerCase() : ref.path;
+    if (!this.indexUpdates.enqueue(key, { ref, digest })) this.invalidateNoteIndex();
+  }
+
+  private async updateSavedNote(ref: FileRef, digest: string, current: () => boolean): Promise<void> {
+    let targets: SavedNoteTarget[] = [];
+    try {
+      targets = await resolveSavedNote(this.workbench.indexRoots(), ref);
+      if (!current()) return;
+      if (!targets.length) return;
+      if (targets.some(({ rootName, file }) => !this.noteIndex.has(rootName, file.relative))) {
+        this.invalidateNoteIndex(); return;
+      }
+      const opened = await readWorkspaceFile(targets[0].file, MAX_INDEX_FILE_BYTES);
+      if (!current()) return;
+      const actual = await sha256(opened.bytes);
+      if (!current()) return;
+      if (actual !== digest) throw new Error('File changed again after the save.');
+      const text = decodeFile(opened.bytes).text;
+      // Build all records before committing, so parser errors cannot partially replace the snapshot.
+      const parsed = new NoteIndex();
+      for (const { rootName, file } of targets) parsed.set({ rootName, name: file.name, relative: file.relative }, text);
+      if (!current()) return;
+      this.noteIndex.mergeFrom(parsed);
+      for (const { rootName, file } of targets) this.indexUpdateFailures.delete(JSON.stringify([rootName, file.relative]));
+    } catch (error) {
+      if (!current()) return;
+      if (!targets.length) { this.invalidateNoteIndex(); return; }
+      for (const { rootName, file } of targets) {
+        const key = JSON.stringify([rootName, file.relative]);
+        if (!this.indexUpdateFailures.has(key) && this.indexUpdateFailures.size >= 100) { this.indexUpdateFailureOverflow = true; continue; }
+        this.indexUpdateFailures.set(key, `${rootName}/${file.relative}: ${this.errorText(error)}`);
+      }
+    }
+  }
+
   /** Mark the index stale; a refresh is scheduled only while the Notes panel is open. */
   private invalidateNoteIndex(): void {
+    this.indexUpdates.cancel();
     this.indexToken++;
     this.indexStale = true;
+    this.indexNeedsRefresh = true;
     this.indexController?.abort();
     this.indexController = null;
     this.renderNotesPanel();
@@ -1165,13 +1221,16 @@ class WrytroveApp {
     if (force) this.indexEnabled = true;
     if (force && this.indexBusy) { this.invalidateNoteIndex(); return; }
     if (!this.notesOpen || this.indexBusy || !this.indexEnabled) return;
-    if (!force && this.noteIndex.size && !this.indexStale) return;
+    if (!force && this.indexSnapshot && !this.indexNeedsRefresh) return;
+    this.indexUpdates.cancel();
     this.indexBusy = true;
+    this.indexStale = true;
+    this.indexNeedsRefresh = true;
     const controller = new AbortController();
     this.indexController = controller;
     const token = ++this.indexToken;
     let failure: string | null = null;
-    this.renderTags();
+    this.renderNotesPanel();
     try {
       const scan = await this.workbench.indexableFiles(controller.signal);
       if (controller.signal.aborted || token !== this.indexToken || !this.notesOpen) return;
@@ -1192,6 +1251,10 @@ class WrytroveApp {
           if (scan.issues.length < 8) scan.issues.push('record limit reached while retaining previous notes');
         }
       } else this.noteIndex = next;
+      for (const record of next.all()) this.indexUpdateFailures.delete(JSON.stringify([record.rootName, record.relative]));
+      this.indexSnapshot = true;
+      this.indexNeedsRefresh = false;
+      if (!incomplete) { this.indexUpdateFailures.clear(); this.indexUpdateFailureOverflow = false; }
       this.indexStale = incomplete;
       this.indexProblem = incomplete ? [scan.truncated ? 'scan limit reached' : '', scan.skipped ? `${scan.skipped} items skipped` : '', ...scan.issues].filter(Boolean).join('; ') : null;
     } catch (error) {
@@ -1896,7 +1959,7 @@ class WrytroveApp {
       case 'tab-outline': this.showTabOutline(); break;
       case 'notes-panel': case 'sidebar-notes': this.toggleNotesPanel(); break;
       case 'build-index': void this.buildNoteIndex(true); break;
-      case 'clear-index': this.indexEnabled = false; this.cancelNoteIndexRefresh(); this.noteIndex.clear(); this.indexStale = true; this.indexProblem = null; this.toast('The local note index was cleared. Nothing on disk was changed.'); this.renderNotesPanel(); break;
+      case 'clear-index': this.indexEnabled = false; this.indexUpdates.cancel(); this.indexSnapshot = false; this.indexUpdateFailures.clear(); this.indexUpdateFailureOverflow = false; this.cancelNoteIndexRefresh(); this.noteIndex.clear(); this.indexStale = true; this.indexNeedsRefresh = true; this.indexProblem = null; this.toast('The local note index was cleared. Nothing on disk was changed.'); this.renderNotesPanel(); break;
       case 'focus-mode': this.toggleFocus('focus'); break;
       case 'typewriter-mode': this.toggleFocus('typewriter'); break;
       case 'zen-mode': this.toggleFocus('zen'); break;

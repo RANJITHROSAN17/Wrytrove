@@ -3,14 +3,14 @@ import { expect, test, type Page } from '@playwright/test';
 async function freshProject(page: Page, multiRoot = false, inbox = false) {
   await page.addInitScript(({ multi, inbox }) => {
     type Handle = { kind: 'file' | 'directory'; name: string; [key: string]: unknown };
-    const win = window as Window & { __projectWrites?: number; __projectCreates?: number; __inboxText?: () => string; __holdWrite?: boolean; __releaseWrite?: () => void; __failReadAfterWrite?: boolean; __createInboxAfterListing?: boolean; __holdIndexRead?: boolean; __releaseIndexRead?: () => void; __failIndexRead?: boolean; __setInboxText?: (text: string) => void };
-    win.__projectWrites = 0; win.__projectCreates = 0;
+    const win = window as Window & { __projectWrites?: number; __projectCreates?: number; __inboxText?: () => string; __holdWrite?: boolean; __releaseWrite?: () => void; __failReadAfterWrite?: boolean; __createInboxAfterListing?: boolean; __holdIndexRead?: boolean; __releaseIndexRead?: () => void; __failIndexRead?: boolean; __setInboxText?: (text: string) => void; __directoryReads?: number; __fileReads?: Record<string, number> };
+    win.__projectWrites = 0; win.__projectCreates = 0; win.__directoryReads = 0; win.__fileReads = {};
     const file = (name: string, initial: string): Handle => {
       let text = initial;
       if (name === 'Inbox.md') { win.__inboxText = () => text; win.__setInboxText = (value) => { text = value; }; }
       const handle: Handle = {
         kind: 'file', name,
-        getFile: async () => { if (name === 'Inbox.md' && win.__holdIndexRead) await new Promise<void>((resolve) => { win.__releaseIndexRead = resolve; }); if (name === 'Inbox.md' && (win.__failIndexRead || (win.__failReadAfterWrite && win.__projectWrites))) throw new Error('Read blocked'); return new File([text], name); },
+        getFile: async () => { win.__fileReads![name] = (win.__fileReads![name] || 0) + 1; if (name === 'Inbox.md' && win.__holdIndexRead) await new Promise<void>((resolve) => { win.__releaseIndexRead = resolve; }); if (name === 'Inbox.md' && (win.__failIndexRead || (win.__failReadAfterWrite && win.__projectWrites))) throw new Error('Read blocked'); return new File([text], name); },
         isSameEntry: async (other: unknown) => other === handle,
         createWritable: async () => {
           let next = '';
@@ -23,6 +23,7 @@ async function freshProject(page: Page, multiRoot = false, inbox = false) {
       const handle: Handle = {
         kind: 'directory', name,
         values: async function* () {
+          win.__directoryReads!++;
           for (const entry of entries) yield entry;
           if (name === 'demo-project' && win.__createInboxAfterListing) {
             win.__createInboxAfterListing = false;
@@ -437,4 +438,78 @@ test('clearing or closing a workspace prevents an in-flight scan from publishing
   await page.evaluate(() => { (window as any).__holdIndexRead = false; (window as any).__releaseIndexRead(); });
   await expect(page.locator('#index-status')).toContainText('Open a folder first');
   await expect(page.locator('#all-tags')).toBeEmpty();
+});
+
+
+test('saving an indexed note updates tags and backlinks without walking other files', async ({ page }) => {
+  await freshProject(page, false, true); await openFolder(page);
+  await page.evaluate(() => (window as any).__setInboxText('#old'));
+  await page.getByRole('button', { name: 'Open Inbox.md' }).click();
+  await page.locator('#notes-chip').click(); await page.locator('#notes-tab-tags').click();
+  await expect(page.locator('#all-tags')).toContainText('#old');
+  const before = await page.evaluate(() => ({ dirs: (window as any).__directoryReads, readme: (window as any).__fileReads['readme.md'] }));
+  await page.locator('.cm-content').click(); await page.keyboard.press('Control+End'); await page.keyboard.insertText(' #new [[readme]]');
+  await page.keyboard.press('Control+s');
+  await expect(page.locator('#all-tags')).toContainText('#new');
+  const after = await page.evaluate(() => ({ dirs: (window as any).__directoryReads, readme: (window as any).__fileReads['readme.md'] }));
+  expect(after).toEqual(before);
+  await page.getByRole('button', { name: 'Expand folder docs' }).click();
+  await page.getByRole('button', { name: 'Open docs/readme.md' }).click();
+  await page.locator('#notes-tab-links').click();
+  await expect(page.locator('#backlink-list')).toContainText('Inbox.md');
+});
+
+test('a failed incremental read retains the old note and reports its path until retry', async ({ page }) => {
+  await freshProject(page, false, true); await openFolder(page);
+  await page.evaluate(() => (window as any).__setInboxText('#old'));
+  await page.getByRole('button', { name: 'Open Inbox.md' }).click();
+  await page.locator('#notes-chip').click(); await page.locator('#notes-tab-tags').click();
+  await expect(page.locator('#all-tags')).toContainText('#old');
+  await page.evaluate(() => { (window as any).__failReadAfterWrite = true; });
+  await page.locator('.cm-content').click(); await page.keyboard.press('Control+End'); await page.keyboard.insertText(' #new');
+  await page.keyboard.press('Control+s');
+  await expect(page.locator('#index-status')).toContainText('Inbox.md: Read blocked');
+  await expect(page.locator('#all-tags')).toContainText('#old');
+  await expect(page.locator('#all-tags')).not.toContainText('#new');
+  await page.evaluate(() => { (window as any).__failReadAfterWrite = false; });
+  await page.locator('#index-notes-button').click();
+  await expect(page.locator('#all-tags')).toContainText('#new');
+});
+
+test('closing a workspace while an incremental update is reading cannot repopulate it', async ({ page }) => {
+  await freshProject(page, false, true); await openFolder(page);
+  await page.getByRole('button', { name: 'Open Inbox.md' }).click();
+  await page.locator('#notes-chip').click(); await page.locator('#notes-tab-tags').click();
+  await expect(page.locator('#index-status')).toContainText('indexed');
+  await page.locator('.cm-content').click(); await page.keyboard.press('Control+End'); await page.keyboard.insertText(' #new');
+  await page.evaluate(() => { (window as any).__holdWrite = true; });
+  await page.keyboard.press('Control+s');
+  await expect.poll(() => page.evaluate(() => typeof (window as any).__releaseWrite)).toBe('function');
+  await page.evaluate(() => { (window as any).__holdIndexRead = true; (window as any).__releaseIndexRead = undefined; (window as any).__holdWrite = false; (window as any).__releaseWrite(); });
+  await expect(page.locator('#toast')).toContainText('Saved Inbox.md');
+  await expect.poll(() => page.evaluate(() => typeof (window as any).__releaseIndexRead)).toBe('function');
+  await page.locator('#workspace-close').click();
+  await page.evaluate(() => { (window as any).__holdIndexRead = false; (window as any).__releaseIndexRead(); });
+  await expect(page.locator('#index-status')).toContainText('Open a folder first');
+  await expect(page.locator('#all-tags')).toBeEmpty();
+});
+
+test('an external edit during incremental verification is reported instead of publishing an older save', async ({ page }) => {
+  await freshProject(page, false, true); await openFolder(page);
+  await page.evaluate(() => (window as any).__setInboxText('#old'));
+  await page.getByRole('button', { name: 'Open Inbox.md' }).click();
+  await page.locator('#notes-chip').click(); await page.locator('#notes-tab-tags').click();
+  await expect(page.locator('#all-tags')).toContainText('#old');
+  await page.locator('.cm-content').click(); await page.keyboard.press('Control+End'); await page.keyboard.insertText(' #saved');
+  await page.evaluate(() => { (window as any).__holdWrite = true; });
+  await page.keyboard.press('Control+s');
+  await expect.poll(() => page.evaluate(() => typeof (window as any).__releaseWrite)).toBe('function');
+  await page.evaluate(() => { (window as any).__holdIndexRead = true; (window as any).__releaseIndexRead = undefined; (window as any).__holdWrite = false; (window as any).__releaseWrite(); });
+  await expect.poll(() => page.evaluate(() => typeof (window as any).__releaseIndexRead)).toBe('function');
+  await page.evaluate(() => { (window as any).__setInboxText('#external'); (window as any).__holdIndexRead = false; (window as any).__releaseIndexRead(); });
+  await expect(page.locator('#index-status')).toContainText('Inbox.md: File changed again after the save');
+  await expect(page.locator('#all-tags')).toContainText('#old');
+  await expect(page.locator('#all-tags')).not.toContainText('#saved');
+  await page.locator('#index-notes-button').click();
+  await expect(page.locator('#all-tags')).toContainText('#external');
 });

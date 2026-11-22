@@ -116,6 +116,7 @@ export class NoteIndex {
     return omitted;
   }
 
+  has(rootName: string, relative: string): boolean { return this.records.has(NoteIndex.id(rootName, relative)); }
   get size(): number { return this.records.size; }
   get lastProgress(): IndexProgress { return { ...this.progress, issues: [...this.progress.issues] }; }
   all(): NoteRecord[] { return [...this.records.values()]; }
