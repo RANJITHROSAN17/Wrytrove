@@ -5,8 +5,7 @@ import { ARENA_API_ENDPOINT, ARENA_KEYS_URL, ARENA_PRIVACY_URL, ARENA_WEBSITE, M
 import { findPotentialSecrets } from './sensitive-text';
 import { sha256, encodeFile, decodeFile } from './encoding';
 import { isSafeRelativePath } from './daily';
-import { ExternalChangeError, writeTo, type FileRef, type NativeSaveMetadata, type OpenedFile } from './platform';
-import { shouldInvalidateIndexOnSave } from './note-index';
+import { ExternalChangeError, writeTo, type NativeSaveMetadata, type OpenedFile } from './platform';
 import { scanNoteRoots, type NoteScan } from './note-index-scan';
 import { MAX_WORKSPACE_ROOTS, createWorkspaceEntry, listWorkspaceDirectory, readWorkspaceFile, pickWorkspace, rankWorkspaceFiles, searchWorkspace, walkWorkspace, type DirectoryListing, type NewWorkspaceEntryKind, type SearchResult, type WalkProgress, type WorkspaceDirectory, type WorkspaceFile } from './workspace';
 
@@ -344,6 +343,7 @@ export class Workbench {
         }
       } catch { /* The item already exists; do not imply that creation failed. */ }
       $<HTMLDialogElement>('#workspace-create-dialog').close();
+      this.host.onIndexChanged();
       this.host.toast(refreshed ? `Created ${entry.name}.` : `Created ${entry.name}, but the folder view could not refresh.`);
       if (entry.type === 'file') await this.host.openWorkspaceFile(entry);
     } catch (error) { $('#workspace-create-status').textContent = this.error(error); }
@@ -758,24 +758,8 @@ export class Workbench {
     return this.roots.flatMap((root) => root.folder.kind === 'native' ? [{ path: root.folder.path, name: root.folder.name }] : []);
   }
 
-  /** Whether a successfully saved tab belongs to an open folder and can change the note index. */
-  async savedFileIsInOpenFolder(ref: FileRef | null): Promise<boolean> {
-    if (!ref || ref.kind === 'download') return false;
-    if (ref.kind === 'native') {
-      const roots = this.roots.flatMap((root) => root.folder.kind === 'native' ? [root.folder.path] : []);
-      return shouldInvalidateIndexOnSave(ref.path, roots);
-    }
-    for (const root of this.roots) {
-      if (root.folder.kind !== 'browser') continue;
-      const directory = root.folder.handle as FileSystemDirectoryHandle & { resolve?: (handle: FileSystemHandle) => Promise<string[] | null> };
-      if (typeof directory.resolve !== 'function') continue;
-      try {
-        const parts = await directory.resolve(ref.handle);
-        if (parts && this.roots.includes(root)) return true;
-      } catch { /* An unavailable browser identity must not guess that a save is inside the folder. */ }
-    }
-    return false;
-  }
+  /** A snapshot for resolving a saved file against the currently open roots. */
+  indexRoots(): WorkspaceDirectory[] { return this.roots.map((root) => root.folder); }
 
   private chooseRoot(rootName: string | null): WorkspaceRootState | null {
     if (!this.roots.length) return null;
