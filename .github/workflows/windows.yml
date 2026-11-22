@@ -48,7 +48,19 @@ jobs:
         run: npm run test:val02-fixtures
       # Runs before the browser tests so a Rust result is reported even when the flaky browser step fails.
       - name: Rust file-safety tests
-        run: cargo test --manifest-path src-tauri/Cargo.toml --lib --locked
+        shell: pwsh
+        run: |
+          cargo test --manifest-path src-tauri/Cargo.toml --lib --locked 2>&1 | Tee-Object -FilePath rust-test-output.txt
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            # The tail contains compiler/test diagnostics, not user files. Escape workflow-command
+            # metacharacters so the entire bounded excerpt is one GitHub annotation.
+            $tail = (Get-Content rust-test-output.txt -Tail 80) -join "`n"
+            if ($tail.Length -gt 12000) { $tail = $tail.Substring($tail.Length - 12000) }
+            $escaped = $tail.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::error title=Rust file-safety tests::$escaped"
+          }
+          exit $code
       - name: Install headless Chromium for UI tests
         run: npx playwright install --only-shell chromium
       - name: Browser UI regression tests on Windows
