@@ -10,7 +10,7 @@ mod journal_key;
 mod large_file;
 mod save_transaction;
 
-use save_transaction::{SaveFailure, SavePhase};
+use save_transaction::{PermissionAction, SaveCommit, SaveFailure, SavePhase};
 
 const MAX_FILE_BYTES: usize = 20 * 1024 * 1024;
 const LARGE_FILE_PREFIX: &str = "WRYTROVE_LARGE_FILE: ";
@@ -116,7 +116,7 @@ fn parse_force(value: &str) -> Result<bool, String> {
     match value { "0" => Ok(false), "1" => Ok(true), _ => Err("Invalid overwrite confirmation.".into()) }
 }
 
-fn atomic_write_checked(path: &Path, data: &[u8], expected: &str, force: bool, identity: Option<file_identity::FileIdentity>) -> Result<Option<file_identity::FileIdentity>, SaveFailure> {
+fn atomic_write_checked(path: &Path, data: &[u8], expected: &str, force: bool, identity: Option<file_identity::FileIdentity>) -> Result<SaveCommit, SaveFailure> {
     atomic_write_with_operations(path, data, expected, force, identity, || {},
         |file| file.sync_all(),
         |temp, destination, no_clobber| {
@@ -192,7 +192,7 @@ fn atomic_write_with_operations(
     opened_identity: Option<file_identity::FileIdentity>, before_commit: impl FnOnce(),
     flush: impl FnOnce(&fs::File) -> std::io::Result<()>,
     persist: impl FnOnce(tempfile::NamedTempFile, &Path, bool) -> std::io::Result<()>,
-) -> Result<Option<file_identity::FileIdentity>, SaveFailure> {
+) -> Result<SaveCommit, SaveFailure> {
     let expected = parse_expected(expected).map_err(|err| SaveFailure::new(SavePhase::Request, err))?;
     if !force && matches!(expected, ExpectedVersion::Hash(_)) && opened_identity.is_none() {
         return Err(SaveFailure::new(SavePhase::Verify, "WRYTROVE_FILE_CHANGED: original file identity is unavailable"));
@@ -228,9 +228,10 @@ fn atomic_write_with_operations(
         .map_err(|err| SaveFailure::new(SavePhase::CreateTemp, format!("Cannot create a temporary file beside the destination: {err}")))?;
     temporary.write_all(data).map_err(|err| SaveFailure::new(SavePhase::WriteTemp, format!("Cannot write file: {err}")))?;
     flush(temporary.as_file()).map_err(|err| SaveFailure::new(SavePhase::FlushTemp, format!("Cannot flush file to disk: {err}")))?;
-    if let Some(meta) = metadata {
-        temporary.as_file().set_permissions(meta.permissions()).map_err(|err| SaveFailure::new(SavePhase::PreservePermissions, format!("Cannot preserve file permissions: {err}")))?;
-    }
+    let permissions = if let Some(meta) = metadata {
+        temporary.as_file().set_permissions(meta.permissions()).map_err(|err| SaveFailure::new(SavePhase::PreservePermissions, format!("Cannot set temporary file permissions: {err}")))?;
+        PermissionAction::CopiedToTemp
+    } else { PermissionAction::NotApplied };
     before_commit();
     if let (Some((_, original_identity)), ExpectedVersion::Hash(hash)) = (&verified, expected) {
         let (_, current_identity) = verify_expected(path, hash).map_err(|err| SaveFailure::new(SavePhase::Revalidate, err))?;
@@ -254,7 +255,7 @@ fn atomic_write_with_operations(
     })?;
     // Parent sync is best effort after commit, not an uncommitted failure or durability guarantee.
     sync_parent_directory(parent);
-    Ok(committed_identity)
+    Ok(SaveCommit { identity: committed_identity, permissions })
 }
 
 /// Only files or folders selected, dropped, or launched by the user are in the
@@ -288,7 +289,7 @@ async fn safe_write(app: tauri::AppHandle, request: tauri::ipc::Request<'_>) -> 
     let (data, path, expected, force, identity) = prepared;
     let result = tauri::async_runtime::spawn_blocking(move || atomic_write_checked(&path, &data, &expected, force, identity))
         .await.map_err(|err| SaveFailure::new(SavePhase::Unknown, format!("Save task did not complete: {err}")).json())?;
-    result.map(|identity| save_transaction::committed(identity.map(|value| value.token())))
+    result.map(|result| save_transaction::committed(result.identity.map(|value| value.token()), result.permissions))
         .map_err(|failure| failure.json())
 }
 
@@ -680,10 +681,11 @@ mod tests {
         fs::write(&path, b"one").unwrap();
         let (_, identity) = bounded_read_with_identity(&path, MAX_FILE_BYTES).unwrap();
         let next = atomic_write_checked(&path, b"two", &sha256_hex(b"one"), false, identity).unwrap();
-        assert!(next.is_some());
-        assert_ne!(next, identity);
-        assert_eq!(next, bounded_read_with_identity(&path, MAX_FILE_BYTES).unwrap().1);
-        atomic_write_checked(&path, b"three", &sha256_hex(b"two"), false, next).unwrap();
+        assert!(next.identity.is_some());
+        assert_ne!(next.identity, identity);
+        assert_eq!(next.identity, bounded_read_with_identity(&path, MAX_FILE_BYTES).unwrap().1);
+        assert_eq!(next.permissions, PermissionAction::CopiedToTemp);
+        atomic_write_checked(&path, b"three", &sha256_hex(b"two"), false, next.identity).unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"three");
     }
     #[test]
@@ -809,7 +811,8 @@ mod tests {
     fn safe_write_creates_file_in_selected_directory() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("hello.txt");
-        atomic_write(&path, b"hello", "absent", false).unwrap();
+        let result = atomic_write_checked(&path, b"hello", "absent", false, None).unwrap();
+        assert_eq!(result.permissions, PermissionAction::NotApplied);
         assert_eq!(fs::read(&path).unwrap(), b"hello");
     }
     #[test]

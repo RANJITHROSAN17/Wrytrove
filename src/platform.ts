@@ -10,6 +10,20 @@ export type FileRef = { kind: 'native'; path: string; identity?: string } | { ki
 export interface OpenedFile { name: string; bytes: Uint8Array; ref: FileRef; displayPath?: string; }
 export interface OpenFailure { name: string; message: string; }
 export interface OpenFilesResult { files: OpenedFile[]; failures: OpenFailure[]; }
+/** Operations reported for the staged file; none guarantee final metadata preservation. */
+export type NativePermissionAction = 'copied_to_temp' | 'not_applied' | 'unknown';
+export interface NativeSaveMetadata { permissions: NativePermissionAction; }
+export interface WriteOutcome { digest: string; nativeMetadata?: NativeSaveMetadata; }
+
+/** Honest user-facing description of what the save reported, not a metadata guarantee. */
+export function describeNativeSaveMetadata(metadata: NativeSaveMetadata): string {
+  const permissions = metadata.permissions === 'copied_to_temp'
+    ? 'A basic permissions value was applied to the temporary file; final permissions were not verified.'
+    : metadata.permissions === 'not_applied'
+      ? 'No existing permissions value was applied to the temporary file.'
+      : 'Whether a permissions value was applied to the temporary file is unknown.';
+  return `${permissions} ACLs and other metadata were not verified and may change.`;
+}
 
 export function fileName(path: string): string {
   return path.split(/[\\/]/).pop() || path;
@@ -141,7 +155,7 @@ const savePhaseMessages: Record<NativeSavePhase, string> = {
   create_temp: 'Could not create the temporary file.',
   write_temp: 'Could not write the temporary file.',
   flush_temp: 'Could not flush the temporary file.',
-  preserve_permissions: 'Could not preserve file permissions.',
+  preserve_permissions: 'Could not apply permissions to the temporary file.',
   revalidate: 'Could not recheck the destination.',
   replace: 'The replacement outcome is uncertain. Check the destination before retrying.',
   unknown: 'The save outcome is unknown. Check the destination before retrying.',
@@ -163,8 +177,9 @@ function nativeSaveFailure(error: unknown): { phase: NativeSavePhase; kind: 'con
 }
 
 /** Write to a user-selected destination. Native path uses a same-directory temporary file. */
-export async function writeTo(ref: FileRef, bytes: Uint8Array, name: string, expectedHash: string | null, force = false): Promise<string> {
+export async function writeTo(ref: FileRef, bytes: Uint8Array, name: string, expectedHash: string | null, force = false): Promise<WriteOutcome> {
   const digest = await sha256(bytes);
+  let nativeMetadata: NativeSaveMetadata | undefined;
   if (ref.kind === 'native') {
     // Raw IPC uses non-empty validated headers; neither missing identity nor malformed metadata
     // grants permission to overwrite an existing file.
@@ -195,6 +210,11 @@ export async function writeTo(ref: FileRef, bytes: Uint8Array, name: string, exp
       ref.identity = undefined;
       throw new NativeSaveError('unknown');
     }
+    // A missing or unrecognized advisory report must not turn a committed write
+    // into an uncertain failure and invite a duplicate retry.
+    const metadata = (result as Record<string, unknown>).metadata;
+    const permissions = metadata && typeof metadata === 'object' ? (metadata as Record<string, unknown>).permissions : undefined;
+    nativeMetadata = { permissions: permissions === 'copied_to_temp' || permissions === 'not_applied' ? permissions : 'unknown' };
     // Null means the write committed but the next normal save needs conflict handling.
     ref.identity = identity ?? undefined;
   } else if (ref.kind === 'browser') {
@@ -212,7 +232,7 @@ export async function writeTo(ref: FileRef, bytes: Uint8Array, name: string, exp
     const a = document.createElement('a'); a.href = url; a.download = name; a.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
-  return digest;
+  return { digest, ...(nativeMetadata ? { nativeMetadata } : {}) };
 }
 
 export function refPath(ref: FileRef | null): string | null {
