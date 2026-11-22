@@ -17,6 +17,7 @@
     "benchmark:products": "node benchmarks/product/run.mjs",
     "benchmark:compare": "node benchmarks/compare.mjs",
     "audit:static": "node scripts/security-audit.mjs",
+    "test:val02-fixtures": "node --test tests/val02-fixtures.node.mjs",
     "benchmark:large-file": "node scripts/benchmark-large-file.mjs",
     "study:check": "node scripts/validation/study-evidence.mjs check",
     "study:aggregate": "node scripts/validation/study-evidence.mjs aggregate",

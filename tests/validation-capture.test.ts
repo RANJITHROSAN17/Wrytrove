@@ -67,6 +67,18 @@ describe('VAL-02 state capture', () => {
     expect(diff.changed).toEqual([{ path: 'l', fields: ['target'] }]);
   });
 
+  it('rejects a symlink as the snapshot root', async () => {
+    const link = join(root, 'linked-root');
+    await symlink(outside, link, 'dir');
+    await expect(snapshot(link)).rejects.toThrow('Snapshot root must be a real directory');
+  });
+
+  it('rejects a file as the snapshot root', async () => {
+    const file = join(root, 'file.txt');
+    await writeFile(file, 'synthetic');
+    await expect(snapshot(file)).rejects.toThrow('Snapshot root must be a real directory');
+  });
+
   it('keeps nested paths with forward slashes', async () => {
     await mkdir(join(root, 'sub', 'deep'), { recursive: true });
     await writeFile(join(root, 'sub', 'deep', 'f.md'), '# hi');

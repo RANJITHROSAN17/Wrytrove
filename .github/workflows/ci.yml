@@ -36,6 +36,9 @@ jobs:
       - name: VAL-05 study kit privacy and fixture guard
         run: npm run study:check
 
+      - name: VAL-02 synthetic fixture test
+        run: npm run test:val02-fixtures
+
       - name: Unit tests (Vitest)
         run: npm test
 

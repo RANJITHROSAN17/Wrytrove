@@ -5,16 +5,21 @@
 //   node scripts/validation/capture-state.mjs snapshot <dir> <out.json>
 //   node scripts/validation/capture-state.mjs diff <before.json> <after.json>
 //
-// Links are never followed: symlinks and junctions are recorded by their own target text, so a
-// link pointing outside the scope shows up as a link change, not as changes to its target.
-// Use only disposable VMs and synthetic content.
+// Recognized symlinks and junctions are recorded by their target text, not traversed.
+// This is not a security boundary: other reparse points and concurrent path swaps may be followed.
+// Run only on quiescent, disposable synthetic trees; capture outside targets separately.
 import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import { lstat, readdir, readFile, readlink, writeFile } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-/** Build a sorted snapshot of every entry below `root`, without following links. */
+/** Build a sorted snapshot of a quiescent synthetic tree, without following recognized links. */
 export async function snapshot(root) {
+  const rootInfo = await lstat(root);
+  if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) {
+    throw new Error('Snapshot root must be a real directory, not a link.');
+  }
   const entries = [];
   async function walk(dir) {
     const names = (await readdir(dir)).sort();
@@ -28,11 +33,16 @@ export async function snapshot(root) {
         entries.push({ path: rel, type: 'dir', mtimeMs: info.mtimeMs });
         await walk(full);
       } else if (info.isFile()) {
-        const bytes = await readFile(full);
+        const hash = createHash('sha256');
+        for await (const chunk of createReadStream(full)) hash.update(chunk);
+        const after = await lstat(full);
+        if (!after.isFile() || after.size !== info.size || after.mtimeMs !== info.mtimeMs || after.ino !== info.ino) {
+          throw new Error(`File changed during snapshot: ${rel}`);
+        }
         entries.push({
           path: rel, type: 'file', size: info.size, mtimeMs: info.mtimeMs,
           readOnly: (info.mode & 0o222) === 0,
-          sha256: createHash('sha256').update(bytes).digest('hex'),
+          sha256: hash.digest('hex'),
         });
       } else {
         entries.push({ path: rel, type: 'other' });
