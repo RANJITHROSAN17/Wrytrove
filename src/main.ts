@@ -11,7 +11,7 @@ import { allLanguages, applyEditorExtensions, applyFocus, clearGhost, createEdit
 import { inspectNativeFile, LargeFileView } from './large-file-view';
 import { currentEditableFileLimit } from './large-file-policy';
 import { MAX_FILE_BYTES, decodeFile, encodeFile, sha256, type LineEnding, type TextEncoding } from './encoding';
-import { checkNativeFileChange, chooseSaveTarget, desktop, ExternalChangeError, fileName, NativeFileTooLargeError, pickFiles, pickNativePaths, readNative, refPath, writeTo, type FileRef, type OpenedFile, type OpenFailure } from './platform';
+import { checkNativeFileChange, chooseSaveTarget, desktop, ExternalChangeError, fileName, NativeFileTooLargeError, NativeSaveError, pickFiles, pickNativePaths, readNative, refPath, writeTo, type FileRef, type OpenedFile, type OpenFailure } from './platform';
 import { complete, listModels, runAction, DEFAULT_MODEL } from './ai';
 import { MAX_ACTION_SELECTION, buildActionRequest, getAiAction, type AiActionId } from './ai-actions';
 import { hasPartialSessionMetadata, loadSession, loadSettings, saveSession, saveSettings, type SavedDocument, type Session, type Settings } from './storage';
@@ -742,7 +742,14 @@ class WrytroveApp {
       if (await this.workbench.savedFileIsInOpenFolder(doc.ref)) this.invalidateNoteIndex();
       this.toast(target.ref.kind === 'download' ? 'A copy was downloaded. Browser preview cannot overwrite the original file.' : `Saved ${doc.name}.`);
       return true;
-    } catch (error) { this.toast(`Could not save ${doc.name}: ${this.errorText(error)}`); return false; }
+    } catch (error) {
+      if (error instanceof NativeSaveError && (error.phase === 'replace' || error.phase === 'unknown')) {
+        this.toast(error.message);
+      } else {
+        this.toast(`Could not save ${doc.name}: ${this.errorText(error)}`);
+      }
+      return false;
+    }
     finally { doc.saving = false; }
   }
 

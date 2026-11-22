@@ -8,6 +8,9 @@ mod access_revocation;
 mod file_identity;
 mod journal_key;
 mod large_file;
+mod save_transaction;
+
+use save_transaction::{SaveFailure, SavePhase};
 
 const MAX_FILE_BYTES: usize = 20 * 1024 * 1024;
 const LARGE_FILE_PREFIX: &str = "WRYTROVE_LARGE_FILE: ";
@@ -113,7 +116,7 @@ fn parse_force(value: &str) -> Result<bool, String> {
     match value { "0" => Ok(false), "1" => Ok(true), _ => Err("Invalid overwrite confirmation.".into()) }
 }
 
-fn atomic_write_checked(path: &Path, data: &[u8], expected: &str, force: bool, identity: Option<file_identity::FileIdentity>) -> Result<Option<file_identity::FileIdentity>, String> {
+fn atomic_write_checked(path: &Path, data: &[u8], expected: &str, force: bool, identity: Option<file_identity::FileIdentity>) -> Result<Option<file_identity::FileIdentity>, SaveFailure> {
     atomic_write_with_operations(path, data, expected, force, identity, || {},
         |file| file.sync_all(),
         |temp, destination, no_clobber| {
@@ -179,7 +182,7 @@ fn atomic_write_with_hook(path: &Path, data: &[u8], expected: &str, force: bool,
             } else {
                 temp.persist(destination).map(|_| ()).map_err(|err| err.error)
             }
-        }).map(|_| ())
+        }).map(|_| ()).map_err(|failure| failure.message)
 }
 
 /// The injectable operations let tests simulate I/O failures at the exact boundaries without
@@ -189,69 +192,67 @@ fn atomic_write_with_operations(
     opened_identity: Option<file_identity::FileIdentity>, before_commit: impl FnOnce(),
     flush: impl FnOnce(&fs::File) -> std::io::Result<()>,
     persist: impl FnOnce(tempfile::NamedTempFile, &Path, bool) -> std::io::Result<()>,
-) -> Result<Option<file_identity::FileIdentity>, String> {
-    let expected = parse_expected(expected)?;
+) -> Result<Option<file_identity::FileIdentity>, SaveFailure> {
+    let expected = parse_expected(expected).map_err(|err| SaveFailure::new(SavePhase::Request, err))?;
     if !force && matches!(expected, ExpectedVersion::Hash(_)) && opened_identity.is_none() {
-        return Err("WRYTROVE_FILE_CHANGED: original file identity is unavailable".into());
+        return Err(SaveFailure::new(SavePhase::Verify, "WRYTROVE_FILE_CHANGED: original file identity is unavailable"));
     }
-    if data.len() > MAX_FILE_BYTES { return Err("This file exceeds the 20 MiB safety limit.".into()); }
+    if data.len() > MAX_FILE_BYTES { return Err(SaveFailure::new(SavePhase::Request, "This file exceeds the 20 MiB safety limit.")); }
     let metadata = match fs::symlink_metadata(path) {
         Ok(meta) => {
-            if is_link_or_reparse(&meta) { return Err("Saving through a link or reparse point is not supported. Open the real file instead.".into()); }
-            if !meta.is_file() { return Err("The selected destination is not a regular file.".into()); }
-            if meta.permissions().readonly() { return Err("The selected file is read-only.".into()); }
+            if is_link_or_reparse(&meta) { return Err(SaveFailure::new(SavePhase::Verify, "Saving through a link or reparse point is not supported. Open the real file instead.")); }
+            if !meta.is_file() { return Err(SaveFailure::new(SavePhase::Verify, "The selected destination is not a regular file.")); }
+            if meta.permissions().readonly() { return Err(SaveFailure::new(SavePhase::Verify, "The selected file is read-only.")); }
             Some(meta)
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
-        Err(err) => return Err(format!("Cannot inspect destination: {err}")),
+        Err(err) => return Err(SaveFailure::new(SavePhase::Verify, format!("Cannot inspect destination: {err}"))),
     };
     let verified = if !force {
         match expected {
-            ExpectedVersion::Absent if metadata.is_some() => return Err("WRYTROVE_FILE_CHANGED: destination already exists".into()),
+            ExpectedVersion::Absent if metadata.is_some() => return Err(SaveFailure::new(SavePhase::Verify, "WRYTROVE_FILE_CHANGED: destination already exists")),
             ExpectedVersion::Absent => None,
             ExpectedVersion::Hash(hash) => {
-                if metadata.is_none() { return Err("WRYTROVE_FILE_CHANGED: file no longer exists".into()); }
-                let verified = verify_expected(path, hash)?;
+                if metadata.is_none() { return Err(SaveFailure::new(SavePhase::Verify, "WRYTROVE_FILE_CHANGED: file no longer exists")); }
+                let verified = verify_expected(path, hash).map_err(|err| SaveFailure::new(SavePhase::Verify, err))?;
                 if Some(verified.1) != opened_identity {
-                    return Err("WRYTROVE_FILE_CHANGED: destination identity differs from the file opened".into());
+                    return Err(SaveFailure::new(SavePhase::Verify, "WRYTROVE_FILE_CHANGED: destination identity differs from the file opened"));
                 }
                 Some(verified)
             }
         }
     } else { None };
-    let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).ok_or("No parent directory for the selected file.")?;
+    let parent = path.parent().filter(|p| !p.as_os_str().is_empty())
+        .ok_or_else(|| SaveFailure::new(SavePhase::CreateTemp, "No parent directory for the selected file."))?;
     let mut temporary = tempfile::Builder::new().prefix(".wrytrove-").tempfile_in(parent)
-        .map_err(|err| format!("Cannot create a temporary file beside the destination: {err}"))?;
-    temporary.write_all(data).map_err(|err| format!("Cannot write file: {err}"))?;
-    flush(temporary.as_file()).map_err(|err| format!("Cannot flush file to disk: {err}"))?;
+        .map_err(|err| SaveFailure::new(SavePhase::CreateTemp, format!("Cannot create a temporary file beside the destination: {err}")))?;
+    temporary.write_all(data).map_err(|err| SaveFailure::new(SavePhase::WriteTemp, format!("Cannot write file: {err}")))?;
+    flush(temporary.as_file()).map_err(|err| SaveFailure::new(SavePhase::FlushTemp, format!("Cannot flush file to disk: {err}")))?;
     if let Some(meta) = metadata {
-        temporary.as_file().set_permissions(meta.permissions()).map_err(|err| format!("Cannot preserve file permissions: {err}"))?;
+        temporary.as_file().set_permissions(meta.permissions()).map_err(|err| SaveFailure::new(SavePhase::PreservePermissions, format!("Cannot preserve file permissions: {err}")))?;
     }
     before_commit();
     if let (Some((_, original_identity)), ExpectedVersion::Hash(hash)) = (&verified, expected) {
-        // Compare the identity and hash of a newly opened handle, not only path or content.
-        let (_, current_identity) = verify_expected(path, hash)?;
+        let (_, current_identity) = verify_expected(path, hash).map_err(|err| SaveFailure::new(SavePhase::Revalidate, err))?;
         if current_identity != *original_identity {
-            return Err("WRYTROVE_FILE_CHANGED: destination identity changed during save".into());
+            return Err(SaveFailure::new(SavePhase::Revalidate, "WRYTROVE_FILE_CHANGED: destination identity changed during save"));
         }
     }
-    // Windows replacement can fail while the original handle is open. Close it after comparing;
-    // this leaves the already documented check-to-replacement race and possible identity reuse.
+    // Windows replacement can fail while the original handle is open; the final race remains.
     drop(verified);
-    // Capture the staged file's identity before it is renamed, rather than re-reading a path
-    // that could already have been replaced. If unavailable, the next normal save must conflict.
     let committed_identity = file_identity::identity(temporary.as_file()).ok();
-    // persist_noclobber refuses a file created after the first existence check.
     let no_clobber = !force && expected == ExpectedVersion::Absent;
     persist(temporary, path, no_clobber).map_err(|err| {
-        if no_clobber && err.kind() == std::io::ErrorKind::AlreadyExists {
+        let message = if no_clobber && err.kind() == std::io::ErrorKind::AlreadyExists {
             "WRYTROVE_FILE_CHANGED: destination now exists".to_string()
         } else if no_clobber {
             format!("Cannot create the selected file: {err}")
         } else {
             format!("Cannot replace the original file: {err}")
-        }
+        };
+        SaveFailure::new(SavePhase::Replace, message)
     })?;
+    // Parent sync is best effort after commit, not an uncommitted failure or durability guarantee.
     sync_parent_directory(parent);
     Ok(committed_identity)
 }
@@ -259,31 +260,36 @@ fn atomic_write_with_operations(
 /// Only files or folders selected, dropped, or launched by the user are in the
 /// plugin's dynamic scope. Body is raw bytes; the path is percent-encoded.
 #[tauri::command]
-async fn safe_write(app: tauri::AppHandle, request: tauri::ipc::Request<'_>) -> Result<Option<String>, String> {
-    let data = match request.body() {
-        tauri::ipc::InvokeBody::Raw(data) => data.clone(),
-        _ => return Err("Expected raw file data.".into()),
-    };
-    if data.len() > MAX_FILE_BYTES { return Err("This file exceeds the 20 MiB safety limit.".into()); }
-    let header = |key: &str| -> Result<String, String> {
-        request.headers().get(key).and_then(|h| h.to_str().ok()).map(str::to_owned).ok_or_else(|| format!("Missing {key} header."))
-    };
-    let encoded = header("x-wrytrove-path")?;
-    let path = PathBuf::from(percent_decode_str(&encoded).decode_utf8().map_err(|_| "Invalid file path encoding.")?.into_owned());
-    if !path.is_absolute() || path.components().any(|part| matches!(part, std::path::Component::ParentDir)) {
-        return Err("Invalid file path.".into());
-    }
-    let expected = header("x-wrytrove-expected")?;
-    parse_expected(&expected)?;
-    let force = parse_force(&header("x-wrytrove-force")?)?;
-    let identity_header = header("x-wrytrove-identity")?;
-    let identity = if identity_header == "none" { None }
-        else { Some(file_identity::FileIdentity::parse(&identity_header).ok_or("Invalid file identity.")?) };
-    if !app.fs_scope().is_allowed(&path) { return Err("This file has not been selected for access in Wrytrove.".into()); }
-    check_not_revoked(&app, &path)?;
-    tauri::async_runtime::spawn_blocking(move || atomic_write_checked(&path, &data, &expected, force, identity))
-        .await.map_err(|err| format!("Save task failed: {err}"))?
-        .map(|identity| identity.map(|value| value.token()))
+async fn safe_write(app: tauri::AppHandle, request: tauri::ipc::Request<'_>) -> Result<serde_json::Value, serde_json::Value> {
+    let prepared = (|| -> Result<_, String> {
+        let data = match request.body() {
+            tauri::ipc::InvokeBody::Raw(data) => data.clone(),
+            _ => return Err("Expected raw file data.".into()),
+        };
+        if data.len() > MAX_FILE_BYTES { return Err("This file exceeds the 20 MiB safety limit.".into()); }
+        let header = |key: &str| -> Result<String, String> {
+            request.headers().get(key).and_then(|h| h.to_str().ok()).map(str::to_owned).ok_or_else(|| format!("Missing {key} header."))
+        };
+        let encoded = header("x-wrytrove-path")?;
+        let path = PathBuf::from(percent_decode_str(&encoded).decode_utf8().map_err(|_| "Invalid file path encoding.")?.into_owned());
+        if !path.is_absolute() || path.components().any(|part| matches!(part, std::path::Component::ParentDir)) {
+            return Err("Invalid file path.".into());
+        }
+        let expected = header("x-wrytrove-expected")?;
+        parse_expected(&expected)?;
+        let force = parse_force(&header("x-wrytrove-force")?)?;
+        let identity_header = header("x-wrytrove-identity")?;
+        let identity = if identity_header == "none" { None }
+            else { Some(file_identity::FileIdentity::parse(&identity_header).ok_or("Invalid file identity.")?) };
+        if !app.fs_scope().is_allowed(&path) { return Err("This file has not been selected for access in Wrytrove.".into()); }
+        check_not_revoked(&app, &path)?;
+        Ok((data, path, expected, force, identity))
+    })().map_err(|err| SaveFailure::new(SavePhase::Request, err).json())?;
+    let (data, path, expected, force, identity) = prepared;
+    let result = tauri::async_runtime::spawn_blocking(move || atomic_write_checked(&path, &data, &expected, force, identity))
+        .await.map_err(|err| SaveFailure::new(SavePhase::Unknown, format!("Save task did not complete: {err}")).json())?;
+    result.map(|identity| save_transaction::committed(identity.map(|value| value.token())))
+        .map_err(|failure| failure.json())
 }
 
 /// Windows junctions and other reparse points are deliberately not treated as
@@ -659,7 +665,10 @@ mod tests {
         fs::rename(&path, &moved).unwrap();
         fs::write(&path, &bytes).unwrap();
         let result = atomic_write_checked(&path, b"edited", &hash, false, identity);
-        assert!(result.unwrap_err().contains("destination identity differs from the file opened"));
+        let failure = result.unwrap_err();
+        assert_eq!(failure.phase, SavePhase::Verify);
+        assert!(failure.conflict);
+        assert!(failure.message.contains("destination identity differs from the file opened"));
         assert_eq!(fs::read(&path).unwrap(), b"original");
         assert_eq!(fs::read(&moved).unwrap(), b"original");
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
@@ -682,7 +691,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("file.txt");
         fs::write(&path, b"original").unwrap();
-        assert!(atomic_write_checked(&path, b"new", &sha256_hex(b"original"), false, None).unwrap_err().contains("identity is unavailable"));
+        let failure = atomic_write_checked(&path, b"new", &sha256_hex(b"original"), false, None).unwrap_err();
+        assert_eq!(failure.phase, SavePhase::Verify);
+        assert!(failure.conflict);
+        assert!(failure.message.contains("identity is unavailable"));
         assert_eq!(fs::read(&path).unwrap(), b"original");
     }
     #[test]
@@ -830,6 +842,35 @@ mod tests {
     }
 
     #[test]
+    fn transaction_reports_request_and_create_temp_phases() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing").join("new.txt");
+        let invalid = atomic_write_checked(&path, b"x", "", false, None).unwrap_err();
+        assert_eq!(invalid.phase, SavePhase::Request);
+        let failure = atomic_write_checked(&path, b"x", "absent", false, None).unwrap_err();
+        assert_eq!(failure.phase, SavePhase::CreateTemp);
+        assert!(!failure.conflict);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn transaction_reports_revalidation_conflict() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file.txt");
+        fs::write(&path, b"original").unwrap();
+        let identity = file_identity::identity(&fs::File::open(&path).unwrap()).unwrap();
+        let target = path.clone();
+        let result = atomic_write_with_operations(&path, b"new", &sha256_hex(b"original"), false, Some(identity),
+            move || fs::write(target, b"external").unwrap(),
+            |file| file.sync_all(),
+            |_, _, _| panic!("a conflict must not reach replacement"));
+        let failure = result.unwrap_err();
+        assert_eq!(failure.phase, SavePhase::Revalidate);
+        assert!(failure.conflict);
+        assert_eq!(fs::read(path).unwrap(), b"external");
+    }
+
+    #[test]
     fn simulated_flush_failure_keeps_destination_and_skips_commit() {
         use std::cell::Cell;
         let dir = tempfile::tempdir().unwrap();
@@ -843,7 +884,10 @@ mod tests {
             || hook_called.set(true),
             |_| Err(std::io::Error::new(std::io::ErrorKind::Other, "injected flush failure")),
             |_, _, _| { commit_attempted.set(true); Ok(()) });
-        assert!(result.unwrap_err().contains("Cannot flush file to disk: injected flush failure"));
+        let failure = result.unwrap_err();
+        assert_eq!(failure.phase, SavePhase::FlushTemp);
+        assert!(!failure.conflict);
+        assert!(failure.message.contains("Cannot flush file to disk: injected flush failure"));
         assert!(!hook_called.get());
         assert!(!commit_attempted.get());
         assert_eq!(fs::read(&path).unwrap(), b"original");
@@ -864,7 +908,10 @@ mod tests {
                 assert_eq!(fs::read(temporary.path()).unwrap(), b"updated");
                 Err(std::io::Error::new(std::io::ErrorKind::Other, "injected replace failure"))
             });
-        assert!(result.unwrap_err().contains("Cannot replace the original file: injected replace failure"));
+        let failure = result.unwrap_err();
+        assert_eq!(failure.phase, SavePhase::Replace);
+        assert!(!failure.conflict);
+        assert!(failure.message.contains("Cannot replace the original file: injected replace failure"));
         assert_eq!(fs::read(&path).unwrap(), b"original");
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1, "temporary file must be cleaned up");
     }
