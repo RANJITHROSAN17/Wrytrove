@@ -5,7 +5,7 @@ import { ARENA_API_ENDPOINT, ARENA_KEYS_URL, ARENA_PRIVACY_URL, ARENA_WEBSITE, M
 import { findPotentialSecrets } from './sensitive-text';
 import { sha256, encodeFile, decodeFile } from './encoding';
 import { isSafeRelativePath } from './daily';
-import { ExternalChangeError, writeTo, type FileRef, type OpenedFile } from './platform';
+import { ExternalChangeError, writeTo, type FileRef, type NativeSaveMetadata, type OpenedFile } from './platform';
 import { shouldInvalidateIndexOnSave } from './note-index';
 import { MAX_SEARCH_FILE_BYTES, MAX_WORKSPACE_ROOTS, createWorkspaceEntry, listWorkspaceDirectory, readWorkspaceFile, pickWorkspace, rankWorkspaceFiles, searchWorkspace, walkWorkspace, type DirectoryListing, type NewWorkspaceEntryKind, type SearchResult, type WalkProgress, type WorkspaceDirectory, type WorkspaceFile } from './workspace';
 
@@ -72,6 +72,8 @@ const COMMANDS: { label: string; action: string; shortcut?: string }[] = [
   { label: 'Switch theme', action: 'theme' },
   { label: 'Settings', action: 'settings', shortcut: 'Ctrl+,' },
 ];
+
+interface FolderNoteResult { file: WorkspaceFile; created: boolean; rootName: string; nativeMetadata?: NativeSaveMetadata; }
 
 interface WorkspaceRootState {
   id: number;
@@ -825,7 +827,7 @@ export class Workbench {
    * Read a folder-relative note, creating it (with `template`) when it is absent. Returns the
    * file that now exists; the caller opens it through the normal tab path.
    */
-  async ensureFolderNote(rootName: string | null, relative: string, template: string): Promise<{ file: WorkspaceFile; created: boolean; rootName: string }> {
+  async ensureFolderNote(rootName: string | null, relative: string, template: string): Promise<FolderNoteResult> {
     if (!this.roots.length) throw new Error('Open a folder first — daily notes and captures live inside one.');
     if (!isSafeRelativePath(relative)) throw new Error('The note path must stay inside the selected workspace folder.');
     const root = this.chooseRoot(rootName);
@@ -833,7 +835,7 @@ export class Workbench {
     return this.ensureFolderNoteInRoot(root, relative, template);
   }
 
-  private async ensureFolderNoteInRoot(root: WorkspaceRootState, relative: string, template: string): Promise<{ file: WorkspaceFile; created: boolean; rootName: string }> {
+  private async ensureFolderNoteInRoot(root: WorkspaceRootState, relative: string, template: string): Promise<FolderNoteResult> {
     if (!(await this.sameFolder(root.folder, root.folder))) throw new Error('The open folder changed.');
     const segments = relative.split('/').filter(Boolean);
     const name = segments.pop();
@@ -842,27 +844,28 @@ export class Workbench {
     if (existing) return { file: existing, created: false, rootName: root.folder.name };
     const parent = await this.resolveFolder(root, segments, true);
     const entry = await createWorkspaceEntry(root.folder, parent, name, 'file') as WorkspaceFile;
+    let nativeMetadata: NativeSaveMetadata | undefined;
     if (template) {
       // Creation is exclusive, so the empty-file hash is the version we are allowed to replace.
       // Passing `absent` here would reject the file we just created on native platforms.
-      await this.writeWorkspaceText(entry, template, await sha256(new Uint8Array()));
+      nativeMetadata = await this.writeWorkspaceText(entry, template, await sha256(new Uint8Array()));
     }
     await this.refreshRoot(root);
-    return { file: entry, created: true, rootName: root.folder.name };
+    return { file: entry, created: true, rootName: root.folder.name, nativeMetadata };
   }
 
-  private async writeWorkspaceText(entry: WorkspaceFile, text: string, expectedHash: string | null, opened?: OpenedFile): Promise<void> {
+  private async writeWorkspaceText(entry: WorkspaceFile, text: string, expectedHash: string | null, opened?: OpenedFile): Promise<NativeSaveMetadata | undefined> {
     const source = opened ?? await readWorkspaceFile(entry);
     const current = await sha256(source.bytes);
     if (expectedHash !== null && expectedHash !== current) throw new ExternalChangeError();
     const bytes = encodeFile(text, 'UTF-8', 'LF');
     // Always pass the version that was actually read. Native safe_write verifies it
     // again immediately before replacement; browser writes perform the same check.
-    await writeTo(source.ref, bytes, entry.name, current);
+    return (await writeTo(source.ref, bytes, entry.name, current)).nativeMetadata;
   }
 
   /** Append `text` to a folder-relative note, creating it when it does not exist yet. */
-  async appendToNote(rootName: string | null, relative: string, text: string, header = ''): Promise<{ file: WorkspaceFile; created: boolean; rootName: string }> {
+  async appendToNote(rootName: string | null, relative: string, text: string, header = ''): Promise<FolderNoteResult> {
     if (!this.roots.length) throw new Error('Open a folder first.');
     if (!isSafeRelativePath(relative)) throw new Error('The note path must stay inside the selected workspace folder.');
     const root = this.chooseRoot(rootName);
@@ -881,9 +884,9 @@ export class Workbench {
     const separator = decoded.text.length && !decoded.text.endsWith('\n') ? '\n' : '';
     const prefix = decoded.text.length ? `${separator}\n` : '';
     const next = `${decoded.text}${prefix}${header ? `${header}\n` : ''}${text}${text.endsWith('\n') ? '' : '\n'}`;
-    await this.writeWorkspaceText(existing, next, await sha256(opened.bytes), opened);
+    const nativeMetadata = await this.writeWorkspaceText(existing, next, await sha256(opened.bytes), opened);
     await this.refreshRoot(root);
-    return { file: existing, created: false, rootName: root.folder.name };
+    return { file: existing, created: false, rootName: root.folder.name, nativeMetadata };
   }
 
   /** Every note in every open folder, read through the bounded workspace path. */

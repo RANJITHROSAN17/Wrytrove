@@ -6,7 +6,7 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn(), save: vi.fn() }));
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { MAX_FILE_BYTES } from '../src/encoding';
-import { collectOpenedFiles, pickFiles, readNative, writeTo, ExternalChangeError, NativeFileTooLargeError, NativeSaveError } from '../src/platform';
+import { collectOpenedFiles, describeNativeSaveMetadata, pickFiles, readNative, writeTo, ExternalChangeError, NativeFileTooLargeError, NativeSaveError } from '../src/platform';
 
 const ID = '0123456789abcdef0123456789abcdef';
 const NEXT_ID = 'fedcba9876543210fedcba9876543210';
@@ -87,7 +87,8 @@ describe('native save IPC safety metadata', () => {
   it('sends an absent sentinel for a new destination and retains the committed identity', async () => {
     vi.mocked(invoke).mockResolvedValue({ phase: 'committed', identity: NEXT_ID });
     const result = await writeTo(ref, bytes, 'draft.txt', null);
-    expect(result).toMatch(/^[0-9a-f]{64}$/u);
+    expect(result.digest).toMatch(/^[0-9a-f]{64}$/u);
+    expect(result.nativeMetadata).toEqual({ permissions: 'unknown' });
     expect(ref.identity).toBe(NEXT_ID);
     expect(invoke).toHaveBeenCalledWith('safe_write', bytes, { headers: {
       'x-wrytrove-path': encodeURIComponent(ref.path), 'x-wrytrove-expected': 'absent',
@@ -112,6 +113,25 @@ describe('native save IPC safety metadata', () => {
     } });
   });
 
+  it('reports the staged permissions operation without treating missing or malformed reports as failed writes', async () => {
+    for (const [metadata, permissions] of [
+      [{ permissions: 'copied_to_temp', acl: 'not_verified', other: 'not_verified' }, 'copied_to_temp'],
+      [{ permissions: 'not_applied', acl: 'not_verified', other: 'not_verified' }, 'not_applied'],
+      [undefined, 'unknown'], [null, 'unknown'], [{ permissions: 'preserved' }, 'unknown'],
+    ] as const) {
+      vi.mocked(invoke).mockResolvedValueOnce({ phase: 'committed', identity: NEXT_ID, metadata });
+      const result = await writeTo(ref, bytes, 'draft.txt', null);
+      expect(result.nativeMetadata).toEqual({ permissions });
+      expect(ref.identity).toBe(NEXT_ID);
+    }
+    const copied = describeNativeSaveMetadata({ permissions: 'copied_to_temp' });
+    expect(copied).toContain('temporary file');
+    expect(copied).toContain('final permissions were not verified');
+    for (const permissions of ['copied_to_temp', 'not_applied', 'unknown'] as const) {
+      expect(describeNativeSaveMetadata({ permissions })).toContain('ACLs and other metadata were not verified and may change');
+    }
+  });
+
   it('requires conflict handling when the identity is missing, including recovered tabs', async () => {
     await expect(writeTo(ref, bytes, 'draft.txt', 'a'.repeat(64))).rejects.toBeInstanceOf(ExternalChangeError);
     expect(invoke).not.toHaveBeenCalled();
@@ -122,7 +142,7 @@ describe('native save IPC safety metadata', () => {
 
   it('does not treat an unavailable post-save identity as a failed committed save', async () => {
     vi.mocked(invoke).mockResolvedValue({ phase: 'committed', identity: null });
-    await expect(writeTo(ref, bytes, 'draft.txt', null)).resolves.toMatch(/^[0-9a-f]{64}$/u);
+    await expect(writeTo(ref, bytes, 'draft.txt', null)).resolves.toMatchObject({ digest: expect.stringMatching(/^[0-9a-f]{64}$/u), nativeMetadata: { permissions: 'unknown' } });
     expect(ref.identity).toBeUndefined();
     await expect(writeTo(ref, bytes, 'draft.txt', 'a'.repeat(64))).rejects.toBeInstanceOf(ExternalChangeError);
   });

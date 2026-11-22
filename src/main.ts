@@ -11,7 +11,7 @@ import { allLanguages, applyEditorExtensions, applyFocus, clearGhost, createEdit
 import { inspectNativeFile, LargeFileView } from './large-file-view';
 import { currentEditableFileLimit } from './large-file-policy';
 import { MAX_FILE_BYTES, decodeFile, encodeFile, sha256, type LineEnding, type TextEncoding } from './encoding';
-import { checkNativeFileChange, chooseSaveTarget, desktop, ExternalChangeError, fileName, NativeFileTooLargeError, NativeSaveError, pickFiles, pickNativePaths, readNative, refPath, writeTo, type FileRef, type OpenedFile, type OpenFailure } from './platform';
+import { checkNativeFileChange, chooseSaveTarget, describeNativeSaveMetadata, desktop, ExternalChangeError, fileName, NativeFileTooLargeError, NativeSaveError, pickFiles, pickNativePaths, readNative, refPath, writeTo, type FileRef, type NativeSaveMetadata, type OpenedFile, type OpenFailure, type WriteOutcome } from './platform';
 import { complete, listModels, runAction, DEFAULT_MODEL } from './ai';
 import { MAX_ACTION_SELECTION, buildActionRequest, getAiAction, type AiActionId } from './ai-actions';
 import { hasPartialSessionMetadata, loadSession, loadSettings, saveSession, saveSettings, type SavedDocument, type Session, type Settings } from './storage';
@@ -694,6 +694,11 @@ class WrytroveApp {
     this.view.focus();
   }
 
+  private reportNativeSaveMetadata(name: string, metadata: NativeSaveMetadata): void {
+    $('#save-metadata-message').textContent = `Saved “${name}”. ${describeNativeSaveMetadata(metadata)}`;
+    $('#save-metadata-warning').hidden = false;
+  }
+
   private async saveDoc(doc: Doc, saveAs = false): Promise<boolean> {
     if (doc.saving) { this.toast('This file is already being saved.'); return false; }
     doc.saving = true;
@@ -712,9 +717,9 @@ class WrytroveApp {
       let sameTarget = await this.sameRef(doc.ref, target.ref);
       if (sameTarget && doc.ref?.kind === 'native' && target.ref.kind === 'native') target.ref.identity = doc.ref.identity;
       let expected = sameTarget ? doc.hash : null;
-      let digest: string;
+      let outcome: WriteOutcome;
       for (;;) {
-        try { digest = await writeTo(target.ref, bytes, target.name, expected); break; }
+        try { outcome = await writeTo(target.ref, bytes, target.name, expected); break; }
         catch (error) {
           if (!(error instanceof ExternalChangeError)) throw error;
           const choice = await this.confirm('File changed on disk', `“${target.name}” already exists, changed outside Wrytrove, was removed, or its original identity is unavailable. Overwriting may lose changes.`, [
@@ -729,11 +734,12 @@ class WrytroveApp {
             continue;
           }
           if (choice !== 'overwrite') return false;
-          digest = await writeTo(target.ref, bytes, target.name, expected, true); break;
+          outcome = await writeTo(target.ref, bytes, target.name, expected, true); break;
         }
       }
+      if (outcome.nativeMetadata) this.reportNativeSaveMetadata(target.name, outcome.nativeMetadata);
       if (!sameTarget) doc.displayPath = null;
-      doc.ref = target.ref; doc.name = target.name; doc.hash = digest; doc.sample = false;
+      doc.ref = target.ref; doc.name = target.name; doc.hash = outcome.digest; doc.sample = false;
       this.diskChecks.delete(doc.id); ++this.diskCheckSerial;
       if (target.ref.kind === 'native') this.recordRecent(target.ref.path);
       doc.savedDoc = textAtSave; doc.savedEncoding = encodingAtSave; doc.savedLineEnding = endingAtSave; doc.mixedLineEndings = false;
@@ -1340,6 +1346,7 @@ class WrytroveApp {
     try {
       // The workbench owns file creation so a template is written through one bounded path.
       const result = await this.workbench.ensureFolderNote(rootName, relative, template);
+      if (result.nativeMetadata) this.reportNativeSaveMetadata(result.file.name, result.nativeMetadata);
       const doc = await this.openWorkspaceFile(result.file);
       if (!doc) return false;
       if (line) this.goToLine(line);
@@ -1354,6 +1361,7 @@ class WrytroveApp {
     let result: Awaited<ReturnType<Workbench['appendToNote']>>;
     try {
       result = await this.workbench.appendToNote(rootName, relative, text, header);
+      if (result.nativeMetadata) this.reportNativeSaveMetadata(result.file.name, result.nativeMetadata);
     } catch (error) {
       const message = `Capture could not be confirmed. Check ${relative} on disk before retrying: ${this.errorText(error)}`;
       this.toast(message);
@@ -2176,6 +2184,7 @@ class WrytroveApp {
     $('#setting-recovery').addEventListener('click', () => { void this.toggleRecovery(); });
     $('#retry-recovery-cleanup').addEventListener('click', () => { void this.retryRecoveryCleanup(); });
     $('#disk-change-reload').addEventListener('click', () => { void this.reloadActiveFromDisk(); });
+    $('#save-metadata-dismiss').addEventListener('click', () => { $('#save-metadata-warning').hidden = true; });
     $('#draft-review-compare').addEventListener('click', () => {
       const entry = [...this.pendingReview.keys()].find((id) => this.docs.some((doc) => doc.id === id));
       if (entry) void this.compareDraft(entry);
