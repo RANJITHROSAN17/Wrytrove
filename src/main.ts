@@ -1351,42 +1351,40 @@ class WrytroveApp {
 
   private async appendToFolderNote(rootName: string | null, relative: string, text: string, header = ''): Promise<void> {
     if (!this.workbench.workspaceNames().length) throw new Error('Open a folder first — capture writes into it.');
+    let result: Awaited<ReturnType<Workbench['appendToNote']>>;
     try {
-      const result = await this.workbench.appendToNote(rootName, relative, text, header);
-      // Re-read through the ordinary open path so an already-open tab is replaced by the
-      // version on disk; a stale tab would otherwise save over the capture.
-      const open = this.docs.find((doc) => this.sameRefPath(doc, result.file));
-      if (open) await this.replaceDocFromDisk(open);
-      else await this.openWorkspaceFile(result.file);
-      this.toast(result.created ? `Captured to a new ${relative}.` : `Captured to ${relative}.`);
+      result = await this.workbench.appendToNote(rootName, relative, text, header);
     } catch (error) {
-      this.toast(`Could not capture: ${this.errorText(error)}`);
-      throw error;
+      const message = `Capture could not be confirmed. Check ${relative} on disk before retrying: ${this.errorText(error)}`;
+      this.toast(message);
+      throw new Error(message);
     } finally { this.invalidateNoteIndex(); }
-  }
 
-  /** Swap an open tab's text for the file on disk, keeping the tab and its cursor line. */
-  private async replaceDocFromDisk(doc: Doc): Promise<void> {
-    const ref = doc.ref;
-    if (!ref || ref.kind !== 'native') return;
-    const revision = doc.revision;
-    const file = await readNative(ref.path);
-    if (doc.revision !== revision || this.docs.includes(doc) === false) return;
-    const decoded = decodeFile(file.bytes);
-    const line = doc.state.doc.lineAt(Math.min(doc.state.selection.main.head, doc.state.doc.length)).number;
-    doc.state = createEditorState(decoded.text, this.settings, (update) => this.onEditorUpdate(update), doc.state.selection.main.head);
-    doc.savedDoc = doc.state.doc;
-    doc.encoding = doc.savedEncoding = decoded.encoding;
-    doc.lineEnding = doc.savedLineEnding = decoded.lineEnding;
-    doc.mixedLineEndings = decoded.mixedLineEndings;
-    doc.ref = file.ref;
-    doc.hash = await sha256(file.bytes); doc.revision++;
-    if (doc.id === this.activeId) {
-      this.view.setState(doc.state);
-      this.applyEditorPreferences();
-      this.goToLine(Math.min(line, doc.state.doc.lines));
+    // The append has committed. Never replace an open editor buffer here: it may
+    // already contain edits, or have changed while the append was in flight. Keep
+    // its old hash/identity so a later save checks for the capture on disk.
+    const saved = result.created ? `Captured to a new ${relative}.` : `Captured to ${relative}.`;
+    try {
+      const ref: FileRef = result.file.kind === 'native'
+        ? { kind: 'native', path: result.file.path }
+        : { kind: 'browser', handle: result.file.handle };
+      let open: Doc | undefined;
+      for (const doc of this.docs) {
+        if (await this.sameRef(doc.ref, ref) && this.docs.includes(doc)) { open = doc; break; }
+      }
+      if (open) {
+        if (open.ref?.kind === 'native') { this.diskChecks.set(open.id, 'changed'); this.renderDiskChange(); }
+        this.toast(`${saved} The open tab was not updated; its edits are safe. Review the disk version before saving.`);
+      } else {
+        const file = await readWorkspaceFile(result.file);
+        await this.addOpened(file);
+        this.toast(saved);
+      }
+    } catch {
+      // A lookup or UI failure after the write is not a failed capture. In
+      // particular, do not leave the dialog open inviting an accidental retry.
+      this.toast(`${saved} Could not open or update the note view; check it on disk before retrying.`);
     }
-    this.renderAll(); void this.applyLanguage(); this.scheduleRecovery();
   }
 
   private sameRefPath(doc: Doc, file: WorkspaceFile): boolean {

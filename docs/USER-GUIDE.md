@@ -99,6 +99,10 @@ Browsing is lazy. Search and quick-open traversal skip `.git`, `.hg`, `.svn`, `n
 
 Desktop folder enumeration, reads and creation attempt to reject symbolic links, non-regular files and Windows reparse points, and native reads are bounded. Creation rechecks each parent and uses an exclusive final create. This is **not** a sandbox against a hostile or changing filesystem: parent-directory links, reparse points and time-of-check/time-of-use races are not comprehensively prevented. On desktop, choosing a folder grants recursive file-access scope, which Tauri's persisted-scope plugin can retain after the view closes or the app restarts. Closing the view or clearing recent files does not revoke that scope. The browser preview requires a browser supporting the File System Access API; browser creation cannot guarantee exclusive creation against another process racing to create the same name.
 
+### Quick capture and open notes
+
+Quick capture appends directly to the saved folder note, not to an editor buffer. If that note is already open, its tab is left unchanged, including any unsaved edits, and may not show the capture. Review the disk version before saving the tab; the normal save conflict check warns if the saved file changed. If the capture succeeds but the note cannot be opened or the view cannot be updated, check the note on disk before retrying to avoid adding the same capture twice. Filesystem races and uncertain write outcomes remain possible; keep backups.
+
 ## Large text files (desktop)
 
 When a native file is above the current editable budget, Wrytrove offers a separate **read-only** viewer for files up to 1 GiB. The editable budget is at most 20 MiB and can be lower when the WebView reports low JavaScript heap headroom. Select **Load first window** to begin, or close the viewer before any file content is transferred. Use **Previous window**, **Next window**, or a zero-based **Byte offset** to navigate; only the current text window is shown. UTF-8 is required in the viewer; the ordinary editor keeps its existing encoding support. The viewer is not a live tail: close and reopen if the file changes.
