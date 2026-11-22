@@ -8,6 +8,19 @@ pub struct FileIdentity {
     file: u64,
 }
 
+impl FileIdentity {
+    /// Fixed-width ASCII avoids JSON number precision loss and survives IPC headers.
+    pub fn token(self) -> String { format!("{:016x}{:016x}", self.volume, self.file) }
+
+    pub fn parse(token: &str) -> Option<Self> {
+        if token.len() != 32 || !token.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)) { return None; }
+        Some(Self {
+            volume: u64::from_str_radix(&token[..16], 16).ok()?,
+            file: u64::from_str_radix(&token[16..], 16).ok()?,
+        })
+    }
+}
+
 #[cfg(unix)]
 pub fn identity(file: &File) -> Result<FileIdentity, String> {
     use std::os::unix::fs::MetadataExt;

@@ -6,7 +6,7 @@ export const desktop = isTauri();
 
 // The File System Access API is present in current Chromium/WebView2, but not all TS DOM versions.
 type BrowserPicker = { showOpenFilePicker?: (options?: { multiple?: boolean }) => Promise<FileSystemFileHandle[]>; showSaveFilePicker?: (options?: { suggestedName?: string }) => Promise<FileSystemFileHandle> };
-export type FileRef = { kind: 'native'; path: string } | { kind: 'browser'; handle: FileSystemFileHandle } | { kind: 'download' };
+export type FileRef = { kind: 'native'; path: string; identity?: string } | { kind: 'browser'; handle: FileSystemFileHandle } | { kind: 'download' };
 export interface OpenedFile { name: string; bytes: Uint8Array; ref: FileRef; displayPath?: string; }
 export interface OpenFailure { name: string; message: string; }
 export interface OpenFilesResult { files: OpenedFile[]; failures: OpenFailure[]; }
@@ -26,26 +26,31 @@ export async function pickNativePaths(): Promise<string[]> {
   return Array.isArray(result) ? result : result ? [result] : [];
 }
 
-export async function readNative(path: string, editableLimit?: number): Promise<OpenedFile> {
-  // Native code enforces scope, no-follow and the size bound before bytes cross IPC,
-  // even if a file grows between metadata inspection and the actual read.
-  const request = editableLimit === undefined ? { path, maxBytes: MAX_FILE_BYTES } : { path, maxBytes: editableLimit, offerLargeView: true };
+export async function readNative(path: string, editableLimit?: number, offerLargeView = editableLimit !== undefined): Promise<OpenedFile> {
+  // Native code returns a fixed-width identity prefix and bytes from the same bounded open handle.
+  const request = { path, maxBytes: editableLimit ?? MAX_FILE_BYTES, ...(offerLargeView ? { offerLargeView: true } : {}) };
   const data = await invoke<ArrayBuffer>('workspace_read_file', request).catch((error: unknown) => {
     const prefix = 'WRYTROVE_LARGE_FILE: ';
     if (typeof error === 'string' && error.startsWith(prefix)) throw new NativeFileTooLargeError(error.slice(prefix.length));
     throw error;
   });
-  const bytes = new Uint8Array(data);
+  const framed = new Uint8Array(data);
+  if (framed.length < 32) throw new Error('Invalid native file response.');
+  const token = new TextDecoder().decode(framed.subarray(0, 32));
+  if (!/^[0-9a-f]{32}$/u.test(token) && token !== '-'.repeat(32)) throw new Error('Invalid native file identity.');
+  const bytes = framed.slice(32);
   if (bytes.length > (editableLimit ?? MAX_FILE_BYTES)) throw new NativeFileTooLargeError('File exceeded the editable size budget.');
-  return { name: fileName(path), bytes, ref: { kind: 'native', path } };
+  return { name: fileName(path), bytes, ref: { kind: 'native', path, identity: token === '-'.repeat(32) ? undefined : token } };
 }
 
 /** Check only an already-authorized native path; keep read failures distinct from no change. */
-export async function checkNativeFileChange(path: string, expectedHash: string | null): Promise<'changed' | 'unchanged' | 'unavailable'> {
+export async function checkNativeFileChange(path: string, expectedHash: string | null, expectedIdentity?: string): Promise<'changed' | 'unchanged' | 'unavailable'> {
   try {
     const file = await readNative(path);
     const hash = await sha256(file.bytes);
-    return expectedHash !== null && hash === expectedHash ? 'unchanged' : 'changed';
+    if (expectedHash === null || hash !== expectedHash) return 'changed';
+    if (file.ref.kind !== 'native' || !expectedIdentity || !file.ref.identity) return 'unavailable';
+    return file.ref.identity === expectedIdentity ? 'unchanged' : 'changed';
   } catch { return 'unavailable'; }
 }
 
@@ -139,12 +144,19 @@ export async function writeTo(ref: FileRef, bytes: Uint8Array, name: string, exp
       // "absent" means a new destination must not already exist, not permission
       // to replace an unverified file. Both sides validate this metadata.
       if (expectedHash !== null && !/^[0-9a-f]{64}$/u.test(expectedHash)) throw new Error('Invalid saved file version.');
-      await invoke('safe_write', bytes, { headers: {
+      if (ref.identity !== undefined && !/^[0-9a-f]{32}$/u.test(ref.identity)) throw new Error('Invalid saved file identity.');
+      if (expectedHash !== null && !force && ref.identity === undefined) throw new ExternalChangeError();
+      const identity = await invoke<unknown>('safe_write', bytes, { headers: {
         'x-wrytrove-path': encodeURIComponent(ref.path),
         'x-wrytrove-expected': expectedHash ?? 'absent',
+        'x-wrytrove-identity': ref.identity ?? 'none',
         'x-wrytrove-force': force ? '1' : '0',
       } });
+      // The write has committed. If identity was unavailable, preserve success but require
+      // conflict handling on a future normal save rather than using a freshly read path.
+      ref.identity = typeof identity === 'string' && /^[0-9a-f]{32}$/u.test(identity) ? identity : undefined;
     } catch (error) {
+      if (error instanceof ExternalChangeError) throw error;
       const message = String(error);
       if (message.includes('WRYTROVE_FILE_CHANGED')) throw new ExternalChangeError();
       throw new Error(message);

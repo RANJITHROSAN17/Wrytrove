@@ -113,6 +113,19 @@ fn parse_force(value: &str) -> Result<bool, String> {
     match value { "0" => Ok(false), "1" => Ok(true), _ => Err("Invalid overwrite confirmation.".into()) }
 }
 
+fn atomic_write_checked(path: &Path, data: &[u8], expected: &str, force: bool, identity: Option<file_identity::FileIdentity>) -> Result<Option<file_identity::FileIdentity>, String> {
+    atomic_write_with_operations(path, data, expected, force, identity, || {},
+        |file| file.sync_all(),
+        |temp, destination, no_clobber| {
+            if no_clobber {
+                temp.persist_noclobber(destination).map(|_| ()).map_err(|err| err.error)
+            } else {
+                temp.persist(destination).map(|_| ()).map_err(|err| err.error)
+            }
+        })
+}
+
+#[cfg(test)]
 fn atomic_write(path: &Path, data: &[u8], expected: &str, force: bool) -> Result<(), String> {
     atomic_write_with_hook(path, data, expected, force, || {})
 }
@@ -154,8 +167,11 @@ fn sync_parent_directory(_parent: &Path) {}
 
 /// `before_commit` runs after the temporary file is flushed and before the destination is revalidated.
 /// Tests use it to change the destination at the point where a race would matter.
+#[cfg(test)]
 fn atomic_write_with_hook(path: &Path, data: &[u8], expected: &str, force: bool, before_commit: impl FnOnce()) -> Result<(), String> {
-    atomic_write_with_operations(path, data, expected, force, before_commit,
+    // Older tests exercise races within a save; obtain a baseline as a real read would.
+    let identity = open_regular_file(path).ok().and_then(|(file, _)| file_identity::identity(&file).ok());
+    atomic_write_with_operations(path, data, expected, force, identity, before_commit,
         |file| file.sync_all(),
         |temp, destination, no_clobber| {
             if no_clobber {
@@ -163,17 +179,21 @@ fn atomic_write_with_hook(path: &Path, data: &[u8], expected: &str, force: bool,
             } else {
                 temp.persist(destination).map(|_| ()).map_err(|err| err.error)
             }
-        })
+        }).map(|_| ())
 }
 
 /// The injectable operations let tests simulate I/O failures at the exact boundaries without
 /// exposing fault injection through IPC. A simulated error is not evidence of OS crash durability.
 fn atomic_write_with_operations(
-    path: &Path, data: &[u8], expected: &str, force: bool, before_commit: impl FnOnce(),
+    path: &Path, data: &[u8], expected: &str, force: bool,
+    opened_identity: Option<file_identity::FileIdentity>, before_commit: impl FnOnce(),
     flush: impl FnOnce(&fs::File) -> std::io::Result<()>,
     persist: impl FnOnce(tempfile::NamedTempFile, &Path, bool) -> std::io::Result<()>,
-) -> Result<(), String> {
+) -> Result<Option<file_identity::FileIdentity>, String> {
     let expected = parse_expected(expected)?;
+    if !force && matches!(expected, ExpectedVersion::Hash(_)) && opened_identity.is_none() {
+        return Err("WRYTROVE_FILE_CHANGED: original file identity is unavailable".into());
+    }
     if data.len() > MAX_FILE_BYTES { return Err("This file exceeds the 20 MiB safety limit.".into()); }
     let metadata = match fs::symlink_metadata(path) {
         Ok(meta) => {
@@ -191,7 +211,11 @@ fn atomic_write_with_operations(
             ExpectedVersion::Absent => None,
             ExpectedVersion::Hash(hash) => {
                 if metadata.is_none() { return Err("WRYTROVE_FILE_CHANGED: file no longer exists".into()); }
-                Some(verify_expected(path, hash)?)
+                let verified = verify_expected(path, hash)?;
+                if Some(verified.1) != opened_identity {
+                    return Err("WRYTROVE_FILE_CHANGED: destination identity differs from the file opened".into());
+                }
+                Some(verified)
             }
         }
     } else { None };
@@ -214,6 +238,9 @@ fn atomic_write_with_operations(
     // Windows replacement can fail while the original handle is open. Close it after comparing;
     // this leaves the already documented check-to-replacement race and possible identity reuse.
     drop(verified);
+    // Capture the staged file's identity before it is renamed, rather than re-reading a path
+    // that could already have been replaced. If unavailable, the next normal save must conflict.
+    let committed_identity = file_identity::identity(temporary.as_file()).ok();
     // persist_noclobber refuses a file created after the first existence check.
     let no_clobber = !force && expected == ExpectedVersion::Absent;
     persist(temporary, path, no_clobber).map_err(|err| {
@@ -226,13 +253,13 @@ fn atomic_write_with_operations(
         }
     })?;
     sync_parent_directory(parent);
-    Ok(())
+    Ok(committed_identity)
 }
 
 /// Only files or folders selected, dropped, or launched by the user are in the
 /// plugin's dynamic scope. Body is raw bytes; the path is percent-encoded.
 #[tauri::command]
-async fn safe_write(app: tauri::AppHandle, request: tauri::ipc::Request<'_>) -> Result<(), String> {
+async fn safe_write(app: tauri::AppHandle, request: tauri::ipc::Request<'_>) -> Result<Option<String>, String> {
     let data = match request.body() {
         tauri::ipc::InvokeBody::Raw(data) => data.clone(),
         _ => return Err("Expected raw file data.".into()),
@@ -249,10 +276,14 @@ async fn safe_write(app: tauri::AppHandle, request: tauri::ipc::Request<'_>) -> 
     let expected = header("x-wrytrove-expected")?;
     parse_expected(&expected)?;
     let force = parse_force(&header("x-wrytrove-force")?)?;
+    let identity_header = header("x-wrytrove-identity")?;
+    let identity = if identity_header == "none" { None }
+        else { Some(file_identity::FileIdentity::parse(&identity_header).ok_or("Invalid file identity.")?) };
     if !app.fs_scope().is_allowed(&path) { return Err("This file has not been selected for access in Wrytrove.".into()); }
     check_not_revoked(&app, &path)?;
-    tauri::async_runtime::spawn_blocking(move || atomic_write(&path, &data, &expected, force))
+    tauri::async_runtime::spawn_blocking(move || atomic_write_checked(&path, &data, &expected, force, identity))
         .await.map_err(|err| format!("Save task failed: {err}"))?
+        .map(|identity| identity.map(|value| value.token()))
 }
 
 /// Windows junctions and other reparse points are deliberately not treated as
@@ -293,18 +324,25 @@ fn bounded_directory(path: &Path) -> Result<serde_json::Value, String> {
 
 /// Bound native reads even if the file grows after the metadata check. The final
 /// component is opened without following links; parent-directory races remain.
-fn bounded_read(path: &Path, max_bytes: usize) -> Result<Vec<u8>, String> {
+fn bounded_read_with_identity(path: &Path, max_bytes: usize) -> Result<(Vec<u8>, Option<file_identity::FileIdentity>), String> {
     if max_bytes == 0 || max_bytes > MAX_FILE_BYTES { return Err("Invalid file size limit.".into()); }
-    let (file, metadata) = open_regular_file(path)?;
+    let (mut file, metadata) = open_regular_file(path)?;
     if metadata.len() > max_bytes as u64 {
         return Err(format!("{LARGE_FILE_PREFIX}File exceeds the {max_bytes}-byte limit for this operation."));
     }
+    // An unavailable identity does not prevent reading. It cannot authorize a normal overwrite.
+    let identity = file_identity::identity(&file).ok();
     let mut bytes = Vec::new();
-    file.take(max_bytes as u64 + 1).read_to_end(&mut bytes).map_err(|err| format!("Cannot read file: {err}"))?;
+    (&mut file).take(max_bytes as u64 + 1).read_to_end(&mut bytes).map_err(|err| format!("Cannot read file: {err}"))?;
     if bytes.len() > max_bytes {
         return Err(format!("{LARGE_FILE_PREFIX}File grew beyond the size limit while reading."));
     }
-    Ok(bytes)
+    Ok((bytes, identity))
+}
+
+#[cfg(test)]
+fn bounded_read(path: &Path, max_bytes: usize) -> Result<Vec<u8>, String> {
+    bounded_read_with_identity(path, max_bytes).map(|(bytes, _)| bytes)
 }
 
 /// Open the final path component without following links or blocking on a Unix FIFO.
@@ -368,12 +406,16 @@ async fn workspace_list_directory(app: tauri::AppHandle, path: String) -> Result
 async fn workspace_read_file(app: tauri::AppHandle, path: String, max_bytes: usize, offer_large_view: Option<bool>) -> Result<tauri::ipc::Response, String> {
     let path = PathBuf::from(path);
     check_read_path(&app, &path)?;
-    let result = tauri::async_runtime::spawn_blocking(move || bounded_read(&path, max_bytes)).await.map_err(|err| format!("File task failed: {err}"))?;
-    let bytes = result.map_err(|error| {
+    let result = tauri::async_runtime::spawn_blocking(move || bounded_read_with_identity(&path, max_bytes)).await.map_err(|err| format!("File task failed: {err}"))?;
+    let (bytes, identity) = result.map_err(|error| {
         if offer_large_view.unwrap_or(false) { error }
         else { error.strip_prefix(LARGE_FILE_PREFIX).unwrap_or(&error).to_string() }
     })?;
-    Ok(tauri::ipc::Response::new(bytes))
+    // Fixed 32-byte ASCII identity prefix; dashes mean the identity is unavailable.
+    // The size limit applies to file bytes, not this protocol envelope.
+    let mut response = identity.map(|id| id.token()).unwrap_or_else(|| "-".repeat(32)).into_bytes();
+    response.extend_from_slice(&bytes);
+    Ok(tauri::ipc::Response::new(response))
 }
 
 /// A conservative, cross-platform single component; rejects Windows device names
@@ -607,6 +649,43 @@ mod tests {
         assert!(leftovers.is_empty(), "temporary file was left behind");
     }
     #[test]
+    fn same_content_replacement_before_save_requires_conflict() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file.txt");
+        fs::write(&path, b"original").unwrap();
+        let (bytes, identity) = bounded_read_with_identity(&path, MAX_FILE_BYTES).unwrap();
+        let hash = sha256_hex(&bytes);
+        let moved = dir.path().join("moved.txt");
+        fs::rename(&path, &moved).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let result = atomic_write_checked(&path, b"edited", &hash, false, identity);
+        assert!(result.unwrap_err().contains("destination identity differs from the file opened"));
+        assert_eq!(fs::read(&path).unwrap(), b"original");
+        assert_eq!(fs::read(&moved).unwrap(), b"original");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+    #[test]
+    fn successful_saves_return_the_new_identity_for_the_next_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file.txt");
+        fs::write(&path, b"one").unwrap();
+        let (_, identity) = bounded_read_with_identity(&path, MAX_FILE_BYTES).unwrap();
+        let next = atomic_write_checked(&path, b"two", &sha256_hex(b"one"), false, identity).unwrap();
+        assert!(next.is_some());
+        assert_ne!(next, identity);
+        assert_eq!(next, bounded_read_with_identity(&path, MAX_FILE_BYTES).unwrap().1);
+        atomic_write_checked(&path, b"three", &sha256_hex(b"two"), false, next).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"three");
+    }
+    #[test]
+    fn missing_identity_never_authorizes_a_normal_overwrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file.txt");
+        fs::write(&path, b"original").unwrap();
+        assert!(atomic_write_checked(&path, b"new", &sha256_hex(b"original"), false, None).unwrap_err().contains("identity is unavailable"));
+        assert_eq!(fs::read(&path).unwrap(), b"original");
+    }
+    #[test]
     fn save_aborts_when_destination_is_replaced_with_identical_content() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("file.txt");
@@ -731,6 +810,11 @@ mod tests {
         assert_eq!(parse_force("0").unwrap(), false);
         assert_eq!(parse_force("1").unwrap(), true);
         for invalid in ["", "true", "2", "01"] { assert!(parse_force(invalid).is_err()); }
+        for invalid in ["", "none", "a", "g0000000000000000000000000000000", "A0000000000000000000000000000000"] {
+            assert!(file_identity::FileIdentity::parse(invalid).is_none());
+        }
+        let valid = "0123456789abcdef0123456789abcdef";
+        assert_eq!(file_identity::FileIdentity::parse(valid).unwrap().token(), valid);
     }
     #[test]
     fn new_destination_created_during_save_is_not_clobbered() {
@@ -754,7 +838,8 @@ mod tests {
         let expected = sha256_hex(b"original");
         let hook_called = Cell::new(false);
         let commit_attempted = Cell::new(false);
-        let result = atomic_write_with_operations(&path, b"updated", &expected, false,
+        let identity = file_identity::identity(&fs::File::open(&path).unwrap()).unwrap();
+        let result = atomic_write_with_operations(&path, b"updated", &expected, false, Some(identity),
             || hook_called.set(true),
             |_| Err(std::io::Error::new(std::io::ErrorKind::Other, "injected flush failure")),
             |_, _, _| { commit_attempted.set(true); Ok(()) });
@@ -771,7 +856,8 @@ mod tests {
         let path = dir.path().join("existing.txt");
         fs::write(&path, b"original").unwrap();
         let expected = sha256_hex(b"original");
-        let result = atomic_write_with_operations(&path, b"updated", &expected, false, || {},
+        let identity = file_identity::identity(&fs::File::open(&path).unwrap()).unwrap();
+        let result = atomic_write_with_operations(&path, b"updated", &expected, false, Some(identity), || {},
             |file| file.sync_all(),
             |temporary, _, no_clobber| {
                 assert!(!no_clobber);
