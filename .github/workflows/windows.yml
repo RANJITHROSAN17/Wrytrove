@@ -44,6 +44,8 @@ jobs:
           npm run build
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm test
+      - name: VAL-02 synthetic fixture test
+        run: npm run test:val02-fixtures
       # Runs before the browser tests so a Rust result is reported even when the flaky browser step fails.
       - name: Rust file-safety tests
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib --locked

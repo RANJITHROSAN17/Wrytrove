@@ -9,14 +9,10 @@ Done.
 
 - Use a disposable VM from a clean Windows 10 or Windows 11 profile with current supported WebView2.
 - Use synthetic content only. Never use real user documents.
-- Before the case, run `node scripts/validation/capture-state.mjs snapshot <scope> before.json`.
-  Record the hashes of anything outside the scope as well, and snapshot those directories too.
-- After the case, snapshot again and run `node scripts/validation/capture-state.mjs diff before.json after.json`.
-  A non-zero exit means something changed. Explain each change in the Observed column.
-- Node must be installed in the test VM for the capture tool. It is a test-only dependency and is
-  not needed for the shipped application.
-- Attach `before.json`, `after.json`, the diff output, screenshots and the application log to the
-  run record.
+- Follow the [case-by-case runbook](VALIDATION-RUNBOOK-VAL-02.md) on **both** Windows versions. Make a separate run record for each case, variant and OS; a summary row is not a substitute for its evidence.
+- Capture the workspace and outside canary separately before and after the action; explain every diff. See the runbook for commands, ACL/attribute capture, limitations, and exit codes.
+- Node is a test-only dependency, not needed by the shipped application. Evidence must be stored outside the snapshot roots.
+- Attach before/after JSON, diff output, Windows metadata/ACL captures and relevant sanitized screenshots or logs to each run record. Never publish real paths, credentials or user documents.
 
 ## Matrix
 
