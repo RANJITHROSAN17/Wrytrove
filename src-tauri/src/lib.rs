@@ -5,6 +5,7 @@ use tauri::{Emitter, Manager, State};
 use tauri_plugin_fs::FsExt;
 
 mod access_revocation;
+mod file_identity;
 mod journal_key;
 mod large_file;
 
@@ -116,11 +117,9 @@ fn atomic_write(path: &Path, data: &[u8], expected: &str, force: bool) -> Result
     atomic_write_with_hook(path, data, expected, force, || {})
 }
 
-/// Verifies the destination still matches `expected`. Used before writing and again just before the
-/// rename, so a change during the write is caught. The check cannot be atomic with the rename, so a
-/// change in the last instant is still possible; this narrows the window rather than closing it.
-fn verify_expected(path: &Path, expected: ExpectedVersion<'_>) -> Result<(), String> {
-    let ExpectedVersion::Hash(hash) = expected else { return Ok(()) };
+/// Hash and identify the *same opened handle*. The returned handle stays open until the save
+/// ends, preventing identity reuse after a replacement. The check is not atomic with rename.
+fn verify_expected(path: &Path, hash: &str) -> Result<(fs::File, file_identity::FileIdentity), String> {
     let meta = match fs::symlink_metadata(path) {
         Ok(meta) => meta,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Err("WRYTROVE_FILE_CHANGED: file no longer exists".into()),
@@ -128,12 +127,17 @@ fn verify_expected(path: &Path, expected: ExpectedVersion<'_>) -> Result<(), Str
     };
     if is_link_or_reparse(&meta) { return Err("WRYTROVE_FILE_CHANGED: destination is now a link or reparse point".into()); }
     if !meta.is_file() { return Err("WRYTROVE_FILE_CHANGED: destination is no longer a regular file".into()); }
-    if meta.len() > MAX_FILE_BYTES as u64 { return Err("WRYTROVE_FILE_CHANGED: the file grew beyond the safety limit".into()); }
-    // Bounded and no-follow read, including if the file grows after stat.
-    let bytes = bounded_read(path, MAX_FILE_BYTES)
+    let (mut file, opened) = open_regular_file(path)
         .map_err(|_| "WRYTROVE_FILE_CHANGED: cannot verify the file on disk".to_string())?;
-    if sha256_hex(&bytes) != hash { return Err("WRYTROVE_FILE_CHANGED: file differs from the version you opened".into()); }
-    Ok(())
+    if opened.len() > MAX_FILE_BYTES as u64 { return Err("WRYTROVE_FILE_CHANGED: the file grew beyond the safety limit".into()); }
+    let identity = file_identity::identity(&file)?;
+    let mut bytes = Vec::new();
+    (&mut file).take(MAX_FILE_BYTES as u64 + 1).read_to_end(&mut bytes)
+        .map_err(|err| format!("Cannot verify the file on disk: {err}"))?;
+    if bytes.len() > MAX_FILE_BYTES || sha256_hex(&bytes) != hash {
+        return Err("WRYTROVE_FILE_CHANGED: file differs from the version you opened".into());
+    }
+    Ok((file, identity))
 }
 
 /// Flushes the parent directory so the rename is durable. Best effort: the file is already committed
@@ -181,16 +185,16 @@ fn atomic_write_with_operations(
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
         Err(err) => return Err(format!("Cannot inspect destination: {err}")),
     };
-    if !force {
+    let verified = if !force {
         match expected {
             ExpectedVersion::Absent if metadata.is_some() => return Err("WRYTROVE_FILE_CHANGED: destination already exists".into()),
-            ExpectedVersion::Absent => {},
-            ExpectedVersion::Hash(_) => {
+            ExpectedVersion::Absent => None,
+            ExpectedVersion::Hash(hash) => {
                 if metadata.is_none() { return Err("WRYTROVE_FILE_CHANGED: file no longer exists".into()); }
-                verify_expected(path, expected)?;
+                Some(verify_expected(path, hash)?)
             }
         }
-    }
+    } else { None };
     let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).ok_or("No parent directory for the selected file.")?;
     let mut temporary = tempfile::Builder::new().prefix(".wrytrove-").tempfile_in(parent)
         .map_err(|err| format!("Cannot create a temporary file beside the destination: {err}"))?;
@@ -200,9 +204,12 @@ fn atomic_write_with_operations(
         temporary.as_file().set_permissions(meta.permissions()).map_err(|err| format!("Cannot preserve file permissions: {err}"))?;
     }
     before_commit();
-    if !force && matches!(expected, ExpectedVersion::Hash(_)) {
-        // The temporary file is dropped on error, so a failed check leaves the destination untouched.
-        verify_expected(path, expected)?;
+    if let (Some((_, original_identity)), ExpectedVersion::Hash(hash)) = (&verified, expected) {
+        // Compare the identity and hash of a newly opened handle, not only path or content.
+        let (_, current_identity) = verify_expected(path, hash)?;
+        if current_identity != *original_identity {
+            return Err("WRYTROVE_FILE_CHANGED: destination identity changed during save".into());
+        }
     }
     // persist_noclobber refuses a file created after the first existence check.
     let no_clobber = !force && expected == ExpectedVersion::Absent;
@@ -215,6 +222,8 @@ fn atomic_write_with_operations(
             format!("Cannot replace the original file: {err}")
         }
     })?;
+    // Keep the first handle alive through the identity comparison and replacement.
+    drop(verified);
     sync_parent_directory(parent);
     Ok(())
 }
@@ -595,6 +604,24 @@ mod tests {
         let leftovers: Vec<_> = fs::read_dir(dir.path()).unwrap().filter_map(Result::ok)
             .filter(|e| e.file_name().to_string_lossy().starts_with(".wrytrove-")).collect();
         assert!(leftovers.is_empty(), "temporary file was left behind");
+    }
+    #[test]
+    fn save_aborts_when_destination_is_replaced_with_identical_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file.txt");
+        let moved = dir.path().join("original-moved.txt");
+        fs::write(&path, b"original").unwrap();
+        let old_hash = sha256_hex(b"original");
+        let target = path.clone();
+        let original = moved.clone();
+        let result = atomic_write_with_hook(&path, b"new", &old_hash, false, move || {
+            fs::rename(&target, &original).unwrap();
+            fs::write(&target, b"original").unwrap();
+        });
+        assert!(result.unwrap_err().contains("destination identity changed during save"));
+        assert_eq!(fs::read(&path).unwrap(), b"original");
+        assert_eq!(fs::read(&moved).unwrap(), b"original");
+        assert!(fs::read_dir(dir.path()).unwrap().all(|entry| !entry.unwrap().file_name().to_string_lossy().starts_with(".wrytrove-")));
     }
     #[test]
     fn save_aborts_when_destination_is_deleted_before_commit() {
