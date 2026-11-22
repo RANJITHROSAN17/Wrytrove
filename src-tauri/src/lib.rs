@@ -151,6 +151,24 @@ fn sync_parent_directory(_parent: &Path) {}
 /// `before_commit` runs after the temporary file is flushed and before the destination is revalidated.
 /// Tests use it to change the destination at the point where a race would matter.
 fn atomic_write_with_hook(path: &Path, data: &[u8], expected: &str, force: bool, before_commit: impl FnOnce()) -> Result<(), String> {
+    atomic_write_with_operations(path, data, expected, force, before_commit,
+        |file| file.sync_all(),
+        |temp, destination, no_clobber| {
+            if no_clobber {
+                temp.persist_noclobber(destination).map(|_| ()).map_err(|err| err.error)
+            } else {
+                temp.persist(destination).map(|_| ()).map_err(|err| err.error)
+            }
+        })
+}
+
+/// The injectable operations let tests simulate I/O failures at the exact boundaries without
+/// exposing fault injection through IPC. A simulated error is not evidence of OS crash durability.
+fn atomic_write_with_operations(
+    path: &Path, data: &[u8], expected: &str, force: bool, before_commit: impl FnOnce(),
+    flush: impl FnOnce(&fs::File) -> std::io::Result<()>,
+    persist: impl FnOnce(tempfile::NamedTempFile, &Path, bool) -> std::io::Result<()>,
+) -> Result<(), String> {
     let expected = parse_expected(expected)?;
     if data.len() > MAX_FILE_BYTES { return Err("This file exceeds the 20 MiB safety limit.".into()); }
     let metadata = match fs::symlink_metadata(path) {
@@ -177,7 +195,7 @@ fn atomic_write_with_hook(path: &Path, data: &[u8], expected: &str, force: bool,
     let mut temporary = tempfile::Builder::new().prefix(".wrytrove-").tempfile_in(parent)
         .map_err(|err| format!("Cannot create a temporary file beside the destination: {err}"))?;
     temporary.write_all(data).map_err(|err| format!("Cannot write file: {err}"))?;
-    temporary.as_file().sync_all().map_err(|err| format!("Cannot flush file to disk: {err}"))?;
+    flush(temporary.as_file()).map_err(|err| format!("Cannot flush file to disk: {err}"))?;
     if let Some(meta) = metadata {
         temporary.as_file().set_permissions(meta.permissions()).map_err(|err| format!("Cannot preserve file permissions: {err}"))?;
     }
@@ -186,15 +204,17 @@ fn atomic_write_with_hook(path: &Path, data: &[u8], expected: &str, force: bool,
         // The temporary file is dropped on error, so a failed check leaves the destination untouched.
         verify_expected(path, expected)?;
     }
-    if !force && expected == ExpectedVersion::Absent {
-        // Also refuse to overwrite a file created after the first existence check.
-        temporary.persist_noclobber(path).map_err(|err| {
-            if err.error.kind() == std::io::ErrorKind::AlreadyExists { "WRYTROVE_FILE_CHANGED: destination now exists".to_string() }
-            else { format!("Cannot create the selected file: {}", err.error) }
-        })?;
-    } else {
-        temporary.persist(path).map_err(|err| format!("Cannot replace the original file: {}", err.error))?;
-    }
+    // persist_noclobber refuses a file created after the first existence check.
+    let no_clobber = !force && expected == ExpectedVersion::Absent;
+    persist(temporary, path, no_clobber).map_err(|err| {
+        if no_clobber && err.kind() == std::io::ErrorKind::AlreadyExists {
+            "WRYTROVE_FILE_CHANGED: destination now exists".to_string()
+        } else if no_clobber {
+            format!("Cannot create the selected file: {err}")
+        } else {
+            format!("Cannot replace the original file: {err}")
+        }
+    })?;
     sync_parent_directory(parent);
     Ok(())
 }
@@ -684,6 +704,57 @@ mod tests {
         assert_eq!(parse_force("1").unwrap(), true);
         for invalid in ["", "true", "2", "01"] { assert!(parse_force(invalid).is_err()); }
     }
+    #[test]
+    fn new_destination_created_during_save_is_not_clobbered() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new.txt");
+        let competing_path = path.clone();
+        let result = atomic_write_with_hook(&path, b"our data", "absent", false, move || {
+            fs::write(competing_path, b"competing data").unwrap();
+        });
+        assert!(result.unwrap_err().contains("WRYTROVE_FILE_CHANGED"));
+        assert_eq!(fs::read(&path).unwrap(), b"competing data");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1, "temporary file must be cleaned up");
+    }
+
+    #[test]
+    fn simulated_flush_failure_keeps_destination_and_skips_commit() {
+        use std::cell::Cell;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("existing.txt");
+        fs::write(&path, b"original").unwrap();
+        let expected = sha256_hex(b"original");
+        let hook_called = Cell::new(false);
+        let commit_attempted = Cell::new(false);
+        let result = atomic_write_with_operations(&path, b"updated", &expected, false,
+            || hook_called.set(true),
+            |_| Err(std::io::Error::new(std::io::ErrorKind::Other, "injected flush failure")),
+            |_, _, _| { commit_attempted.set(true); Ok(()) });
+        assert!(result.unwrap_err().contains("Cannot flush file to disk: injected flush failure"));
+        assert!(!hook_called.get());
+        assert!(!commit_attempted.get());
+        assert_eq!(fs::read(&path).unwrap(), b"original");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1, "temporary file must be cleaned up");
+    }
+
+    #[test]
+    fn simulated_replace_failure_keeps_destination_and_cleans_temporary_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("existing.txt");
+        fs::write(&path, b"original").unwrap();
+        let expected = sha256_hex(b"original");
+        let result = atomic_write_with_operations(&path, b"updated", &expected, false, || {},
+            |file| file.sync_all(),
+            |temporary, _, no_clobber| {
+                assert!(!no_clobber);
+                assert_eq!(fs::read(temporary.path()).unwrap(), b"updated");
+                Err(std::io::Error::new(std::io::ErrorKind::Other, "injected replace failure"))
+            });
+        assert!(result.unwrap_err().contains("Cannot replace the original file: injected replace failure"));
+        assert_eq!(fs::read(&path).unwrap(), b"original");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1, "temporary file must be cleaned up");
+    }
+
     #[test]
     fn new_destination_does_not_silently_overwrite_existing_file() {
         let dir = tempfile::tempdir().unwrap();
