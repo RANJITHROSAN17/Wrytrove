@@ -182,6 +182,8 @@ npx playwright install --only-shell chromium
 npm run test:e2e
 ```
 
+For the network-free synthetic AI evaluation, run `npm run ai:eval -- --mode mock`. The [AI evaluation guide](docs/AI-EVALUATION.md) describes optional Ollama runs, privacy boundaries and why mock passes do not measure a real model.
+
 With the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) installed, run native tests with:
 
 ```sh
