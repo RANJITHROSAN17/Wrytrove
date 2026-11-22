@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 
 async function openNative(page: Page) {
   await page.addInitScript(() => {
-    type State = Window & { isTauri: boolean; __diskText: string; __diskIdentity: string; __writeIdentity?: string; __holdRead: boolean; __failRead: boolean; __writes: number; __releaseRead?: () => void; __TAURI_INTERNALS__: unknown };
+    type State = Window & { isTauri: boolean; __diskText: string; __diskIdentity: string; __writeIdentity?: string; __saveFailure?: { phase: string; kind: string; message: string }; __holdRead: boolean; __failRead: boolean; __writes: number; __releaseRead?: () => void; __TAURI_INTERNALS__: unknown };
     const win = window as unknown as State;
     win.isTauri = true;
     win.__diskText = 'original file';
@@ -15,7 +15,10 @@ async function openNative(page: Page) {
       invoke: async (command: string, _args: unknown, options?: { headers?: Record<string, string> }) => {
         if (command === 'take_launch_files') return ['C:\\notes\\draft.txt'];
         if (command === 'plugin:event|listen') return ++next;
-        if (command === 'safe_write') { win.__writes++; win.__writeIdentity = options?.headers?.['x-wrytrove-identity']; throw 'WRYTROVE_FILE_CHANGED'; }
+        if (command === 'safe_write') {
+          win.__writes++; win.__writeIdentity = options?.headers?.['x-wrytrove-identity'];
+          throw win.__saveFailure ?? { phase: 'revalidate', kind: 'conflict', message: 'WRYTROVE_FILE_CHANGED: destination changed' };
+        }
         if (command === 'workspace_read_file') {
           if (win.__failRead) throw new Error('Permission denied');
           if (win.__holdRead) await new Promise<void>((resolve) => { win.__releaseRead = resolve; });
@@ -94,6 +97,30 @@ test('a dirty conflict still requires confirmation before any overwrite', async 
   expect(await page.evaluate(() => (window as unknown as { __writes: number }).__writes)).toBe(1);
   expect(await page.evaluate(() => (window as unknown as { __writeIdentity?: string }).__writeIdentity)).toBe('0123456789abcdef0123456789abcdef');
   expect(await page.evaluate(() => (window as unknown as { __diskText: string }).__diskText)).toBe('external file');
+});
+
+test('a flush failure reports the stage and keeps edits unsaved', async ({ page }) => {
+  await openNative(page);
+  await page.locator('.cm-content').click();
+  await page.keyboard.press('Control+End');
+  await page.keyboard.insertText(' local edits');
+  await page.evaluate(() => { (window as unknown as { __saveFailure: unknown }).__saveFailure = { phase: 'flush_temp', kind: 'failure', message: 'disk full' }; });
+  await page.keyboard.press('Control+s');
+  await expect(page.locator('#toast')).toContainText('Could not flush the temporary file');
+  await expect(page.locator('.cm-content')).toContainText('original file local edits');
+  await expect(page.locator('#toolbar-dirty')).toBeVisible();
+});
+
+test('an uncertain replacement warns instead of claiming a failed or successful save', async ({ page }) => {
+  await openNative(page);
+  await page.locator('.cm-content').click();
+  await page.keyboard.press('Control+End');
+  await page.keyboard.insertText(' local edits');
+  await page.evaluate(() => { (window as unknown as { __saveFailure: unknown }).__saveFailure = { phase: 'replace', kind: 'failure', message: 'I/O error' }; });
+  await page.keyboard.press('Control+s');
+  await expect(page.locator('#toast')).toContainText('replacement outcome is uncertain');
+  await expect(page.locator('.cm-content')).toContainText('original file local edits');
+  await expect(page.locator('#toolbar-dirty')).toBeVisible();
 });
 
 test('an unreadable disk file does not silently appear unchanged', async ({ page }) => {

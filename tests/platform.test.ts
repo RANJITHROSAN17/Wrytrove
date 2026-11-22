@@ -6,7 +6,7 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({ open: vi.fn(), save: vi.fn() }));
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { MAX_FILE_BYTES } from '../src/encoding';
-import { collectOpenedFiles, pickFiles, readNative, writeTo, ExternalChangeError, NativeFileTooLargeError } from '../src/platform';
+import { collectOpenedFiles, pickFiles, readNative, writeTo, ExternalChangeError, NativeFileTooLargeError, NativeSaveError } from '../src/platform';
 
 const ID = '0123456789abcdef0123456789abcdef';
 const NEXT_ID = 'fedcba9876543210fedcba9876543210';
@@ -85,7 +85,7 @@ describe('native save IPC safety metadata', () => {
   beforeEach(() => { ref = { kind: 'native', path: 'C:\\notes\\draft.txt' }; });
 
   it('sends an absent sentinel for a new destination and retains the committed identity', async () => {
-    vi.mocked(invoke).mockResolvedValue(NEXT_ID);
+    vi.mocked(invoke).mockResolvedValue({ phase: 'committed', identity: NEXT_ID });
     const result = await writeTo(ref, bytes, 'draft.txt', null);
     expect(result).toMatch(/^[0-9a-f]{64}$/u);
     expect(ref.identity).toBe(NEXT_ID);
@@ -98,7 +98,7 @@ describe('native save IPC safety metadata', () => {
   it('sends the opened identity and updates it for the next save', async () => {
     const hash = 'a'.repeat(64);
     ref.identity = ID;
-    vi.mocked(invoke).mockResolvedValue(NEXT_ID);
+    vi.mocked(invoke).mockResolvedValue({ phase: 'committed', identity: NEXT_ID });
     await writeTo(ref, bytes, 'draft.txt', hash);
     expect(invoke).toHaveBeenLastCalledWith('safe_write', bytes, { headers: {
       'x-wrytrove-path': encodeURIComponent(ref.path), 'x-wrytrove-expected': hash,
@@ -115,16 +115,40 @@ describe('native save IPC safety metadata', () => {
   it('requires conflict handling when the identity is missing, including recovered tabs', async () => {
     await expect(writeTo(ref, bytes, 'draft.txt', 'a'.repeat(64))).rejects.toBeInstanceOf(ExternalChangeError);
     expect(invoke).not.toHaveBeenCalled();
-    vi.mocked(invoke).mockResolvedValue(NEXT_ID);
+    vi.mocked(invoke).mockResolvedValue({ phase: 'committed', identity: NEXT_ID });
     await writeTo(ref, bytes, 'draft.txt', 'a'.repeat(64), true);
     expect(ref.identity).toBe(NEXT_ID);
   });
 
   it('does not treat an unavailable post-save identity as a failed committed save', async () => {
-    vi.mocked(invoke).mockResolvedValue(null);
+    vi.mocked(invoke).mockResolvedValue({ phase: 'committed', identity: null });
     await expect(writeTo(ref, bytes, 'draft.txt', null)).resolves.toMatch(/^[0-9a-f]{64}$/u);
     expect(ref.identity).toBeUndefined();
     await expect(writeTo(ref, bytes, 'draft.txt', 'a'.repeat(64))).rejects.toBeInstanceOf(ExternalChangeError);
+  });
+
+  it('reports structured failures and treats replace errors as uncertain', async () => {
+    ref.identity = ID;
+    vi.mocked(invoke).mockRejectedValueOnce({ phase: 'flush_temp', kind: 'failure', message: 'disk full' });
+    await expect(writeTo(ref, bytes, 'draft.txt', 'a'.repeat(64))).rejects.toMatchObject({ phase: 'flush_temp', message: expect.stringContaining('flush the temporary file') });
+    expect(ref.identity).toBe(ID);
+    vi.mocked(invoke).mockRejectedValueOnce({ phase: 'replace', kind: 'failure', message: 'I/O error' });
+    await expect(writeTo(ref, bytes, 'draft.txt', 'a'.repeat(64))).rejects.toMatchObject({ phase: 'replace', message: expect.stringContaining('outcome is uncertain') });
+    expect(ref.identity).toBeUndefined();
+    await expect(writeTo(ref, bytes, 'draft.txt', 'a'.repeat(64))).rejects.toBeInstanceOf(ExternalChangeError);
+  });
+
+  it('does not claim a malformed or lost response is a failed or successful save', async () => {
+    for (const outcome of [null, { phase: 'committed' }, { phase: 'bogus', identity: ID }]) {
+      ref.identity = ID;
+      vi.mocked(invoke).mockResolvedValueOnce(outcome);
+      await expect(writeTo(ref, bytes, 'draft.txt', 'a'.repeat(64))).rejects.toMatchObject({ phase: 'unknown', message: expect.stringContaining('outcome is unknown') });
+      expect(ref.identity).toBeUndefined();
+    }
+    ref.identity = ID;
+    vi.mocked(invoke).mockRejectedValueOnce(new Error('IPC disconnected'));
+    await expect(writeTo(ref, bytes, 'draft.txt', 'a'.repeat(64))).rejects.toBeInstanceOf(NativeSaveError);
+    expect(ref.identity).toBeUndefined();
   });
 
   it('rejects invalid metadata before IPC and translates conflict errors', async () => {
@@ -135,7 +159,7 @@ describe('native save IPC safety metadata', () => {
     await expect(writeTo(ref, bytes, 'draft.txt', 'a'.repeat(64))).rejects.toThrow(/Invalid saved file identity/);
     expect(invoke).not.toHaveBeenCalled();
     ref.identity = undefined;
-    vi.mocked(invoke).mockRejectedValue('WRYTROVE_FILE_CHANGED: destination already exists');
+    vi.mocked(invoke).mockRejectedValue({ phase: 'verify', kind: 'conflict', message: 'WRYTROVE_FILE_CHANGED: destination already exists' });
     await expect(writeTo(ref, bytes, 'draft.txt', null)).rejects.toBeInstanceOf(ExternalChangeError);
   });
 });

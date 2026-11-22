@@ -134,33 +134,69 @@ export class ExternalChangeError extends Error {
   constructor() { super('The file has changed on disk since it was opened.'); this.name = 'ExternalChangeError'; }
 }
 
+export type NativeSavePhase = 'request' | 'verify' | 'create_temp' | 'write_temp' | 'flush_temp' | 'preserve_permissions' | 'revalidate' | 'replace' | 'unknown';
+const savePhaseMessages: Record<NativeSavePhase, string> = {
+  request: 'The save request was rejected.',
+  verify: 'Could not verify the destination.',
+  create_temp: 'Could not create the temporary file.',
+  write_temp: 'Could not write the temporary file.',
+  flush_temp: 'Could not flush the temporary file.',
+  preserve_permissions: 'Could not preserve file permissions.',
+  revalidate: 'Could not recheck the destination.',
+  replace: 'The replacement outcome is uncertain. Check the destination before retrying.',
+  unknown: 'The save outcome is unknown. Check the destination before retrying.',
+};
+
+export class NativeSaveError extends Error {
+  constructor(public readonly phase: NativeSavePhase, detail?: string) {
+    super(`${savePhaseMessages[phase]}${detail ? ` ${detail}` : ''}`);
+    this.name = 'NativeSaveError';
+  }
+}
+
+function nativeSaveFailure(error: unknown): { phase: NativeSavePhase; kind: 'conflict' | 'failure'; message: string } | null {
+  if (!error || typeof error !== 'object') return null;
+  const value = error as Record<string, unknown>;
+  if (typeof value.phase !== 'string' || !Object.hasOwn(savePhaseMessages, value.phase)
+      || (value.kind !== 'failure' && value.kind !== 'conflict') || typeof value.message !== 'string') return null;
+  return { phase: value.phase as NativeSavePhase, kind: value.kind, message: value.message };
+}
+
 /** Write to a user-selected destination. Native path uses a same-directory temporary file. */
 export async function writeTo(ref: FileRef, bytes: Uint8Array, name: string, expectedHash: string | null, force = false): Promise<string> {
   const digest = await sha256(bytes);
   if (ref.kind === 'native') {
+    // Raw IPC uses non-empty validated headers; neither missing identity nor malformed metadata
+    // grants permission to overwrite an existing file.
+    if (expectedHash !== null && !/^[0-9a-f]{64}$/u.test(expectedHash)) throw new Error('Invalid saved file version.');
+    if (ref.identity !== undefined && !/^[0-9a-f]{32}$/u.test(ref.identity)) throw new Error('Invalid saved file identity.');
+    if (expectedHash !== null && !force && ref.identity === undefined) throw new ExternalChangeError();
+    let result: unknown;
     try {
-      // Raw IPC avoids serialising large files as JSON. WebView2 can drop empty
-      // headers, so use a non-empty, strictly validated protocol sentinel.
-      // "absent" means a new destination must not already exist, not permission
-      // to replace an unverified file. Both sides validate this metadata.
-      if (expectedHash !== null && !/^[0-9a-f]{64}$/u.test(expectedHash)) throw new Error('Invalid saved file version.');
-      if (ref.identity !== undefined && !/^[0-9a-f]{32}$/u.test(ref.identity)) throw new Error('Invalid saved file identity.');
-      if (expectedHash !== null && !force && ref.identity === undefined) throw new ExternalChangeError();
-      const identity = await invoke<unknown>('safe_write', bytes, { headers: {
+      result = await invoke<unknown>('safe_write', bytes, { headers: {
         'x-wrytrove-path': encodeURIComponent(ref.path),
         'x-wrytrove-expected': expectedHash ?? 'absent',
         'x-wrytrove-identity': ref.identity ?? 'none',
         'x-wrytrove-force': force ? '1' : '0',
       } });
-      // The write has committed. If identity was unavailable, preserve success but require
-      // conflict handling on a future normal save rather than using a freshly read path.
-      ref.identity = typeof identity === 'string' && /^[0-9a-f]{32}$/u.test(identity) ? identity : undefined;
     } catch (error) {
-      if (error instanceof ExternalChangeError) throw error;
-      const message = String(error);
-      if (message.includes('WRYTROVE_FILE_CHANGED')) throw new ExternalChangeError();
-      throw new Error(message);
+      const failure = nativeSaveFailure(error);
+      if (failure?.kind === 'conflict' && ['verify', 'revalidate', 'replace'].includes(failure.phase)) throw new ExternalChangeError();
+      const phase = failure?.phase ?? 'unknown';
+      if (phase === 'replace' || phase === 'unknown') ref.identity = undefined;
+      throw new NativeSaveError(phase, failure?.message);
     }
+    if (!result || typeof result !== 'object' || (result as Record<string, unknown>).phase !== 'committed') {
+      ref.identity = undefined;
+      throw new NativeSaveError('unknown');
+    }
+    const identity = (result as Record<string, unknown>).identity;
+    if (identity !== null && (typeof identity !== 'string' || !/^[0-9a-f]{32}$/u.test(identity))) {
+      ref.identity = undefined;
+      throw new NativeSaveError('unknown');
+    }
+    // Null means the write committed but the next normal save needs conflict handling.
+    ref.identity = identity ?? undefined;
   } else if (ref.kind === 'browser') {
     if (expectedHash && !force) {
       const current = await ref.handle.getFile();
