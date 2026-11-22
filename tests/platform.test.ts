@@ -8,6 +8,10 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { MAX_FILE_BYTES } from '../src/encoding';
 import { collectOpenedFiles, pickFiles, readNative, writeTo, ExternalChangeError, NativeFileTooLargeError } from '../src/platform';
 
+const ID = '0123456789abcdef0123456789abcdef';
+const NEXT_ID = 'fedcba9876543210fedcba9876543210';
+const nativeFrame = (text: string, identity = ID) => new TextEncoder().encode(identity + text).buffer;
+
 beforeEach(() => { vi.resetAllMocks(); });
 
 describe('independent file opening', () => {
@@ -19,7 +23,7 @@ describe('independent file opening', () => {
       expect(maxBytes).toBe(MAX_FILE_BYTES);
       if (path.endsWith('locked.txt')) throw new Error('Permission denied');
       if (path.endsWith('huge.log')) throw new Error('File exceeds the 20 MiB limit for this operation.');
-      return new TextEncoder().encode(path.endsWith('one.txt') ? 'first' : 'other').buffer;
+      return nativeFrame(path.endsWith('one.txt') ? 'first' : 'other');
     });
 
     const result = await pickFiles();
@@ -45,6 +49,21 @@ describe('independent file opening', () => {
     });
   });
 
+  it('requires a valid identity envelope while preserving arbitrary file bytes', async () => {
+    const payload = new Uint8Array([...new TextEncoder().encode(ID), 0, 255, 10]);
+    vi.mocked(invoke).mockResolvedValueOnce(payload.buffer)
+      .mockResolvedValueOnce(nativeFrame('text', '-'.repeat(32)))
+      .mockResolvedValueOnce(new Uint8Array([1, 2]).buffer)
+      .mockResolvedValueOnce(nativeFrame('text', 'z'.repeat(32)));
+    const opened = await readNative('C:\\test.txt');
+    expect([...opened.bytes]).toEqual([0, 255, 10]);
+    expect(opened.ref).toMatchObject({ kind: 'native', identity: ID });
+    const unverified = await readNative('C:\\test.txt');
+    expect(unverified.ref.kind === 'native' && unverified.ref.identity).toBeUndefined();
+    await expect(readNative('C:\\test.txt')).rejects.toThrow('Invalid native file response');
+    await expect(readNative('C:\\test.txt')).rejects.toThrow('Invalid native file identity');
+  });
+
   it('continues after a loader throws and processes items sequentially', async () => {
     const calls: string[] = [];
     const result = await collectOpenedFiles(['a', 'bad', 'c'], async (name) => {
@@ -61,57 +80,83 @@ describe('independent file opening', () => {
 });
 
 describe('native save IPC safety metadata', () => {
-  const ref = { kind: 'native', path: 'C:\\notes\\draft 📝.txt' } as const;
+  let ref: { kind: 'native'; path: string; identity?: string };
   const bytes = new TextEncoder().encode('new text\r\n');
+  beforeEach(() => { ref = { kind: 'native', path: 'C:\\notes\\draft.txt' }; });
 
-  it('sends a nonempty absent sentinel for a new destination', async () => {
-    vi.mocked(invoke).mockResolvedValue(undefined);
-    const result = await writeTo(ref, bytes, 'draft 📝.txt', null);
+  it('sends an absent sentinel for a new destination and retains the committed identity', async () => {
+    vi.mocked(invoke).mockResolvedValue(NEXT_ID);
+    const result = await writeTo(ref, bytes, 'draft.txt', null);
     expect(result).toMatch(/^[0-9a-f]{64}$/u);
+    expect(ref.identity).toBe(NEXT_ID);
     expect(invoke).toHaveBeenCalledWith('safe_write', bytes, { headers: {
-      'x-wrytrove-path': encodeURIComponent(ref.path),
-      'x-wrytrove-expected': 'absent',
-      'x-wrytrove-force': '0',
+      'x-wrytrove-path': encodeURIComponent(ref.path), 'x-wrytrove-expected': 'absent',
+      'x-wrytrove-identity': 'none', 'x-wrytrove-force': '0',
     } });
   });
 
-  it('sends a validated opened-file hash, and force only when explicitly requested', async () => {
+  it('sends the opened identity and updates it for the next save', async () => {
     const hash = 'a'.repeat(64);
+    ref.identity = ID;
+    vi.mocked(invoke).mockResolvedValue(NEXT_ID);
     await writeTo(ref, bytes, 'draft.txt', hash);
     expect(invoke).toHaveBeenLastCalledWith('safe_write', bytes, { headers: {
-      'x-wrytrove-path': encodeURIComponent(ref.path), 'x-wrytrove-expected': hash, 'x-wrytrove-force': '0',
+      'x-wrytrove-path': encodeURIComponent(ref.path), 'x-wrytrove-expected': hash,
+      'x-wrytrove-identity': ID, 'x-wrytrove-force': '0',
     } });
+    expect(ref.identity).toBe(NEXT_ID);
     await writeTo(ref, bytes, 'draft.txt', hash, true);
     expect(invoke).toHaveBeenLastCalledWith('safe_write', bytes, { headers: {
-      'x-wrytrove-path': encodeURIComponent(ref.path), 'x-wrytrove-expected': hash, 'x-wrytrove-force': '1',
+      'x-wrytrove-path': encodeURIComponent(ref.path), 'x-wrytrove-expected': hash,
+      'x-wrytrove-identity': NEXT_ID, 'x-wrytrove-force': '1',
     } });
   });
 
-  it('rejects invalid version metadata before IPC and translates conflict errors', async () => {
+  it('requires conflict handling when the identity is missing, including recovered tabs', async () => {
+    await expect(writeTo(ref, bytes, 'draft.txt', 'a'.repeat(64))).rejects.toBeInstanceOf(ExternalChangeError);
+    expect(invoke).not.toHaveBeenCalled();
+    vi.mocked(invoke).mockResolvedValue(NEXT_ID);
+    await writeTo(ref, bytes, 'draft.txt', 'a'.repeat(64), true);
+    expect(ref.identity).toBe(NEXT_ID);
+  });
+
+  it('does not treat an unavailable post-save identity as a failed committed save', async () => {
+    vi.mocked(invoke).mockResolvedValue(null);
+    await expect(writeTo(ref, bytes, 'draft.txt', null)).resolves.toMatch(/^[0-9a-f]{64}$/u);
+    expect(ref.identity).toBeUndefined();
+    await expect(writeTo(ref, bytes, 'draft.txt', 'a'.repeat(64))).rejects.toBeInstanceOf(ExternalChangeError);
+  });
+
+  it('rejects invalid metadata before IPC and translates conflict errors', async () => {
     for (const invalid of ['', 'absent', 'not-a-hash', 'A'.repeat(64)]) {
       await expect(writeTo(ref, bytes, 'draft.txt', invalid)).rejects.toThrow(/Invalid saved file version/);
     }
+    ref.identity = 'malformed';
+    await expect(writeTo(ref, bytes, 'draft.txt', 'a'.repeat(64))).rejects.toThrow(/Invalid saved file identity/);
     expect(invoke).not.toHaveBeenCalled();
+    ref.identity = undefined;
     vi.mocked(invoke).mockRejectedValue('WRYTROVE_FILE_CHANGED: destination already exists');
     await expect(writeTo(ref, bytes, 'draft.txt', null)).rejects.toBeInstanceOf(ExternalChangeError);
   });
 });
 
 describe('focus-time native file checking', () => {
-  it('compares the bounded native read with the opened hash and distinguishes read failures', async () => {
+  it('compares hash and identity and distinguishes read failures', async () => {
     const { checkNativeFileChange } = await import('../src/platform');
     const { sha256 } = await import('../src/encoding');
-    const original = new TextEncoder().encode('original');
-    const hash = await sha256(original);
-    vi.mocked(invoke).mockResolvedValueOnce(original.buffer).mockResolvedValueOnce(new TextEncoder().encode('external edit').buffer).mockRejectedValueOnce(new Error('access denied'));
-    expect(await checkNativeFileChange('C:\\notes\\draft.txt', hash)).toBe('unchanged');
-    expect(await checkNativeFileChange('C:\\notes\\draft.txt', hash)).toBe('changed');
-    expect(await checkNativeFileChange('C:\\notes\\draft.txt', hash)).toBe('unavailable');
-    expect(invoke).toHaveBeenCalledWith('workspace_read_file', { path: 'C:\\notes\\draft.txt', maxBytes: MAX_FILE_BYTES });
+    const hash = await sha256(new TextEncoder().encode('original'));
+    vi.mocked(invoke).mockResolvedValueOnce(nativeFrame('original')).mockResolvedValueOnce(nativeFrame('original', NEXT_ID))
+      .mockResolvedValueOnce(nativeFrame('external edit')).mockRejectedValueOnce(new Error('access denied'));
+    expect(await checkNativeFileChange('C:\\notes\\draft.txt', hash, ID)).toBe('unchanged');
+    expect(await checkNativeFileChange('C:\\notes\\draft.txt', hash, ID)).toBe('changed');
+    expect(await checkNativeFileChange('C:\\notes\\draft.txt', hash, ID)).toBe('changed');
+    expect(await checkNativeFileChange('C:\\notes\\draft.txt', hash, ID)).toBe('unavailable');
   });
-  it('treats an unknown hash as unverified, not unchanged', async () => {
+  it('treats an unknown hash or identity as unverified', async () => {
     const { checkNativeFileChange } = await import('../src/platform');
-    vi.mocked(invoke).mockResolvedValue(new TextEncoder().encode('text').buffer);
+    const { sha256 } = await import('../src/encoding');
+    vi.mocked(invoke).mockResolvedValue(nativeFrame('text'));
     expect(await checkNativeFileChange('C:\\notes\\draft.txt', null)).toBe('changed');
+    expect(await checkNativeFileChange('C:\\notes\\draft.txt', await sha256(new TextEncoder().encode('text')))).toBe('unavailable');
   });
 });

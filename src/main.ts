@@ -283,6 +283,8 @@ class WrytroveApp {
       try {
         const file = await readNative(doc.ref.path);
         const hash = await sha256(file.bytes);
+        // A clean tab adopts the identity from the freshly read bytes; dirty recovered tabs do not.
+        doc.ref = file.ref;
         if (hash === doc.hash) continue;
         const decoded = decodeFile(file.bytes);
         const cursor = Math.min(doc.state.selection.main.head, decoded.text.length);
@@ -453,9 +455,9 @@ class WrytroveApp {
     if (!desktop || !this.view || !this.activeId) return;
     const doc = this.active;
     if (doc.ref?.kind !== 'native' || doc.saving) { this.renderDiskChange(); return; }
-    const path = doc.ref.path, hash = doc.hash;
-    const result = await checkNativeFileChange(path, hash);
-    if (serial !== this.diskCheckSerial || this.activeId !== doc.id || doc.ref?.kind !== 'native' || doc.ref.path !== path || doc.hash !== hash || doc.saving) return;
+    const path = doc.ref.path, hash = doc.hash, identity = doc.ref.identity;
+    const result = await checkNativeFileChange(path, hash, identity);
+    if (serial !== this.diskCheckSerial || this.activeId !== doc.id || doc.ref?.kind !== 'native' || doc.ref.path !== path || doc.ref.identity !== identity || doc.hash !== hash || doc.saving) return;
     if (result === 'unchanged') this.diskChecks.delete(doc.id);
     else this.diskChecks.set(doc.id, result);
     this.renderDiskChange();
@@ -496,6 +498,7 @@ class WrytroveApp {
       doc.encoding = doc.savedEncoding = decoded.encoding;
       doc.lineEnding = doc.savedLineEnding = decoded.lineEnding;
       doc.mixedLineEndings = decoded.mixedLineEndings;
+      doc.ref = file.ref;
       doc.hash = hash; doc.revision++;
       this.diskChecks.delete(doc.id);
       this.cancelAi(); this.view.setState(doc.state); this.applyEditorPreferences();
@@ -707,19 +710,21 @@ class WrytroveApp {
       const encodingAtSave = doc.encoding, endingAtSave = doc.lineEnding;
       const bytes = encodeFile(textAtSave.toString(), encodingAtSave, endingAtSave);
       let sameTarget = await this.sameRef(doc.ref, target.ref);
+      if (sameTarget && doc.ref?.kind === 'native' && target.ref.kind === 'native') target.ref.identity = doc.ref.identity;
       let expected = sameTarget ? doc.hash : null;
       let digest: string;
       for (;;) {
         try { digest = await writeTo(target.ref, bytes, target.name, expected); break; }
         catch (error) {
           if (!(error instanceof ExternalChangeError)) throw error;
-          const choice = await this.confirm('File changed on disk', `“${target.name}” already exists, changed outside Wrytrove, or was removed since it was opened. Overwriting may lose changes.`, [
+          const choice = await this.confirm('File changed on disk', `“${target.name}” already exists, changed outside Wrytrove, was removed, or its original identity is unavailable. Overwriting may lose changes.`, [
             { id: 'cancel', label: 'Cancel' }, { id: 'save-as', label: 'Save a copy' }, { id: 'overwrite', label: 'Overwrite', style: 'danger' },
           ], 'CHECK BEFORE SAVING');
           if (choice === 'cancel') return false;
           if (choice === 'save-as') {
             const newTarget = await chooseSaveTarget(doc.name); if (!newTarget) return false;
             target = newTarget; sameTarget = await this.sameRef(doc.ref, target.ref); expected = sameTarget ? doc.hash : null;
+            if (sameTarget && doc.ref?.kind === 'native' && target.ref.kind === 'native') target.ref.identity = doc.ref.identity;
             // Even choosing the same file or an existing copy must be checked again.
             continue;
           }
@@ -1367,6 +1372,7 @@ class WrytroveApp {
     doc.encoding = doc.savedEncoding = decoded.encoding;
     doc.lineEnding = doc.savedLineEnding = decoded.lineEnding;
     doc.mixedLineEndings = decoded.mixedLineEndings;
+    doc.ref = file.ref;
     doc.hash = await sha256(file.bytes); doc.revision++;
     if (doc.id === this.activeId) {
       this.view.setState(doc.state);

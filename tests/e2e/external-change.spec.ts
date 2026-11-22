@@ -2,23 +2,24 @@ import { expect, test, type Page } from '@playwright/test';
 
 async function openNative(page: Page) {
   await page.addInitScript(() => {
-    type State = Window & { isTauri: boolean; __diskText: string; __holdRead: boolean; __failRead: boolean; __writes: number; __releaseRead?: () => void; __TAURI_INTERNALS__: unknown };
+    type State = Window & { isTauri: boolean; __diskText: string; __diskIdentity: string; __writeIdentity?: string; __holdRead: boolean; __failRead: boolean; __writes: number; __releaseRead?: () => void; __TAURI_INTERNALS__: unknown };
     const win = window as unknown as State;
     win.isTauri = true;
     win.__diskText = 'original file';
+    win.__diskIdentity = '0123456789abcdef0123456789abcdef';
     win.__holdRead = false; win.__failRead = false; win.__writes = 0;
     let next = 0;
     win.__TAURI_INTERNALS__ = {
       metadata: { currentWindow: { label: 'main' }, currentWebview: { label: 'main' } },
       transformCallback: () => ++next,
-      invoke: async (command: string) => {
+      invoke: async (command: string, _args: unknown, options?: { headers?: Record<string, string> }) => {
         if (command === 'take_launch_files') return ['C:\\notes\\draft.txt'];
         if (command === 'plugin:event|listen') return ++next;
-        if (command === 'safe_write') { win.__writes++; throw 'WRYTROVE_FILE_CHANGED'; }
+        if (command === 'safe_write') { win.__writes++; win.__writeIdentity = options?.headers?.['x-wrytrove-identity']; throw 'WRYTROVE_FILE_CHANGED'; }
         if (command === 'workspace_read_file') {
           if (win.__failRead) throw new Error('Permission denied');
           if (win.__holdRead) await new Promise<void>((resolve) => { win.__releaseRead = resolve; });
-          return new TextEncoder().encode(win.__diskText).buffer;
+          return new TextEncoder().encode(win.__diskIdentity + win.__diskText).buffer;
         }
         return undefined;
       },
@@ -39,6 +40,16 @@ test('clean native tabs show a notice on focus and reload only on request', asyn
   await expect(page.locator('.cm-content')).toContainText('newer external file');
   await expect(page.locator('#disk-change-warning')).toBeHidden();
   await expect(page.locator('#toolbar-dirty')).toBeHidden();
+});
+
+test('same-content replacement reports a changed native file', async ({ page }) => {
+  await openNative(page);
+  await page.evaluate(() => {
+    (window as unknown as { __diskIdentity: string }).__diskIdentity = 'fedcba9876543210fedcba9876543210';
+    window.dispatchEvent(new Event('focus'));
+  });
+  await expect(page.locator('#disk-change-warning')).toContainText('changed on disk');
+  await expect(page.locator('.cm-content')).toContainText('original file');
 });
 
 test('dirty native tabs preserve edits and do not offer reload', async ({ page }) => {
@@ -81,6 +92,7 @@ test('a dirty conflict still requires confirmation before any overwrite', async 
   await page.locator('#confirm-actions').getByRole('button', { name: 'Cancel' }).click();
   await expect(page.locator('.cm-content')).toContainText('original file local edits');
   expect(await page.evaluate(() => (window as unknown as { __writes: number }).__writes)).toBe(1);
+  expect(await page.evaluate(() => (window as unknown as { __writeIdentity?: string }).__writeIdentity)).toBe('0123456789abcdef0123456789abcdef');
   expect(await page.evaluate(() => (window as unknown as { __diskText: string }).__diskText)).toBe('external file');
 });
 

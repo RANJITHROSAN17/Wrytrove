@@ -2,7 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { lstat } from '@tauri-apps/plugin-fs';
 import { MAX_FILE_BYTES, decodeFile } from './encoding';
-import { desktop, fileName, type OpenedFile } from './platform';
+import { desktop, fileName, readNative, type OpenedFile } from './platform';
 
 // Folder access is explicitly chosen and is not restored as an active folder on launch.
 // Tauri's persisted-scope plugin may separately retain permission for previously selected paths.
@@ -177,10 +177,8 @@ export async function createWorkspaceEntry(root: WorkspaceDirectory, parent: Wor
 
 export async function readWorkspaceFile(entry: WorkspaceFile, maxBytes = MAX_FILE_BYTES): Promise<OpenedFile> {
   if (entry.kind === 'native') {
-    const raw = await invoke<ArrayBuffer>('workspace_read_file', { path: entry.path, maxBytes });
-    const bytes = new Uint8Array(raw);
-    if (bytes.length > maxBytes) throw new Error('File grew beyond the size limit while reading.');
-    return { name: entry.name, bytes, ref: { kind: 'native', path: entry.path }, displayPath: entry.relative };
+    const file = await readNative(entry.path, maxBytes, false);
+    return { ...file, name: entry.name, displayPath: entry.relative };
   }
   const file = await entry.handle.getFile();
   if (file.size > maxBytes) throw new Error(`File exceeds the ${Math.round(maxBytes / 1024 / 1024)} MiB limit for this operation.`);
