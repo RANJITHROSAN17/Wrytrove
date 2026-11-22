@@ -107,8 +107,13 @@ export class NoteIndex {
   }
 
   /** Preserve known-good records when a partial scan cannot establish what was removed. */
-  mergeFrom(other: NoteIndex): void {
-    for (const [id, record] of other.records) this.records.set(id, record);
+  mergeFrom(other: NoteIndex, limit = MAX_INDEX_FILES): number {
+    let omitted = 0;
+    for (const [id, record] of other.records) {
+      if (!this.records.has(id) && this.records.size >= limit) { omitted++; continue; }
+      this.records.set(id, record);
+    }
+    return omitted;
   }
 
   get size(): number { return this.records.size; }

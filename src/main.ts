@@ -1185,8 +1185,13 @@ class WrytroveApp {
       }
       const incomplete = scan.truncated || scan.skipped > 0 || scan.issues.length > 0;
       // A partial snapshot cannot prove old records were deleted. Preserve them until a complete scan.
-      if (incomplete) this.noteIndex.mergeFrom(next);
-      else this.noteIndex = next;
+      if (incomplete) {
+        const omitted = this.noteIndex.mergeFrom(next);
+        if (omitted) {
+          scan.skipped += omitted;
+          if (scan.issues.length < 8) scan.issues.push('record limit reached while retaining previous notes');
+        }
+      } else this.noteIndex = next;
       this.indexStale = incomplete;
       this.indexProblem = incomplete ? [scan.truncated ? 'scan limit reached' : '', scan.skipped ? `${scan.skipped} items skipped` : '', ...scan.issues].filter(Boolean).join('; ') : null;
     } catch (error) {

@@ -52,6 +52,16 @@ describe('bounded note snapshots', () => {
     expect(old.tagIndex().map((x) => x.tag).sort()).toEqual(['lower', 'new', 'old']);
   });
 
+  it('bounds retained partial results while still updating existing records', () => {
+    const old = new NoteIndex(); const fresh = new NoteIndex();
+    old.set({ name: 'a.md', relative: 'a.md', rootName: 'vault' }, '#old');
+    fresh.set({ name: 'a.md', relative: 'a.md', rootName: 'vault' }, '#updated');
+    fresh.set({ name: 'b.md', relative: 'b.md', rootName: 'vault' }, '#new');
+    expect(old.mergeFrom(fresh, 1)).toBe(1);
+    expect(old.size).toBe(1);
+    expect(old.tagIndex().map((item) => item.tag)).toEqual(['updated']);
+  });
+
   it('counts a unique cross-root link as incoming to the target root', () => {
     const index = new NoteIndex();
     index.set({ name: 'a.md', relative: 'a.md', rootName: 'one' }, '[[b]]');
