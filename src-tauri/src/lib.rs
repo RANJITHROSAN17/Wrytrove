@@ -117,8 +117,8 @@ fn atomic_write(path: &Path, data: &[u8], expected: &str, force: bool) -> Result
     atomic_write_with_hook(path, data, expected, force, || {})
 }
 
-/// Hash and identify the *same opened handle*. The returned handle stays open until the save
-/// ends, preventing identity reuse after a replacement. The check is not atomic with rename.
+/// Hash and identify the *same opened handle*. The first handle stays open through the identity
+/// comparison to reduce identity reuse. It is closed before replacement; the check is not atomic.
 fn verify_expected(path: &Path, hash: &str) -> Result<(fs::File, file_identity::FileIdentity), String> {
     let meta = match fs::symlink_metadata(path) {
         Ok(meta) => meta,
@@ -211,6 +211,9 @@ fn atomic_write_with_operations(
             return Err("WRYTROVE_FILE_CHANGED: destination identity changed during save".into());
         }
     }
+    // Windows replacement can fail while the original handle is open. Close it after comparing;
+    // this leaves the already documented check-to-replacement race and possible identity reuse.
+    drop(verified);
     // persist_noclobber refuses a file created after the first existence check.
     let no_clobber = !force && expected == ExpectedVersion::Absent;
     persist(temporary, path, no_clobber).map_err(|err| {
@@ -222,8 +225,6 @@ fn atomic_write_with_operations(
             format!("Cannot replace the original file: {err}")
         }
     })?;
-    // Keep the first handle alive through the identity comparison and replacement.
-    drop(verified);
     sync_parent_directory(parent);
     Ok(())
 }
