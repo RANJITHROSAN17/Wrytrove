@@ -5,7 +5,10 @@ use std::{fs, io::{Read, Seek, SeekFrom}, path::Path};
 pub const MAX_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_RANGE: usize = 256 * 1024;
 
-fn fingerprint(meta: &fs::Metadata) -> Result<String, String> {
+/// One metadata fingerprint: size, modification time and platform identity. Shared with the
+/// change probe in `lib.rs`, which must agree with this definition or a ranged read would be
+/// rejected after a probe said the file was unchanged.
+pub(crate) fn fingerprint(meta: &fs::Metadata) -> Result<String, String> {
     let modified = meta.modified().map_err(|e| format!("Cannot determine file version: {e}"))?;
     #[cfg(unix)]
     let identity = {

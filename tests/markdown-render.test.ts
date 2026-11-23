@@ -6,7 +6,7 @@ function walk(nodes: PreviewNode[]): PreviewNode[] {
   return nodes.flatMap((node) => node.type === 'element' ? [node, ...walk(node.children)] : [node]);
 }
 
-describe('bounded Markdown preview', () => {
+describe('bounded Markdown renderer', () => {
   it('turns ordinary notes, code, tables and lists into allowlisted nodes', () => {
     const result = buildMarkdownPreview('# Hello தமிழ்\n\nA **bold** and `code` note.\n\n7. First\n8. Second\n\n| A | B |\n| - | - |\n| 1 | 2 |\n\n```js\nconsole.log(1)\n```');
     expect(result.ok).toBe(true);

@@ -1,7 +1,13 @@
 /** Lossless text decoding for the encodings Wrytrove can safely write back. */
+// The editable-size budget is authored once in limits.json and enforced by src-tauri/src/lib.rs,
+// so the frontend and the Rust side cannot drift apart.
+import limits from '../limits.json';
+
 export type TextEncoding = 'UTF-8' | 'UTF-8 BOM' | 'UTF-16 LE' | 'UTF-16 BE';
 export type LineEnding = 'LF' | 'CRLF' | 'CR';
-export const MAX_FILE_BYTES = 20 * 1024 * 1024;
+
+export const MAX_FILE_BYTES: number = limits.maxFileBytes;
+export const MAX_FILE_MIB = Math.round(MAX_FILE_BYTES / 1024 / 1024);
 
 export interface DecodedFile {
   text: string; // normalized for the editor; lineEnding records how to write it
@@ -25,7 +31,7 @@ export function inspectLineEndings(input: string): { lineEnding: LineEnding; mix
 }
 
 export function decodeFile(bytes: Uint8Array): DecodedFile {
-  if (bytes.length > MAX_FILE_BYTES) throw new Error('This file is larger than the 20 MiB safety limit.');
+  if (bytes.length > MAX_FILE_BYTES) throw new Error(`This file is larger than the ${MAX_FILE_MIB} MiB safety limit.`);
   let encoding: TextEncoding = 'UTF-8';
   let label = 'utf-8';
   let skip = 0;
@@ -91,7 +97,7 @@ export function encodeFile(text: string, encoding: TextEncoding, lineEnding: Lin
       result[3 + 2 * i] = little ? code >>> 8 : code & 255;
     }
   }
-  if (result.length > MAX_FILE_BYTES) throw new Error('Saving is limited to files up to 20 MiB in this preview.');
+  if (result.length > MAX_FILE_BYTES) throw new Error(`Saving is limited to files up to ${MAX_FILE_MIB} MiB in this preview.`);
   return result;
 }
 

@@ -10,14 +10,16 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { allLanguages, applyEditorExtensions, applyFocus, clearGhost, createEditorState, findLanguage, hasGhost, languageCompartment, languageLabel, showGhost } from './editor';
 import { inspectNativeFile, LargeFileView } from './large-file-view';
 import { currentEditableFileLimit } from './large-file-policy';
-import { MAX_FILE_BYTES, decodeFile, encodeFile, sha256, type LineEnding, type TextEncoding } from './encoding';
+import { MAX_FILE_BYTES, MAX_FILE_MIB, decodeFile, encodeFile, sha256, type LineEnding, type TextEncoding } from './encoding';
+import { menuMove, modShortcut } from './shortcuts';
 import { checkNativeFileChange, chooseSaveTarget, describeNativeSaveMetadata, desktop, ExternalChangeError, fileName, NativeFileTooLargeError, NativeSaveError, pickFiles, pickNativePaths, readNative, refPath, writeTo, type FileRef, type NativeSaveMetadata, type OpenedFile, type OpenFailure, type WriteOutcome } from './platform';
+import { planConflictRetry, sameNativePath, saveAttempt, type ConflictChoice } from './save-conflict';
 import { buildCompletionRequest, complete, listModels, runAction, DEFAULT_MODEL } from './ai';
 import { AI_PROVIDERS, AiSessionConsent, aiAttemptLedger, previewAiPayload, type AiCapability } from './ai-provider';
 import { MAX_ACTION_SELECTION, buildActionRequest, getAiAction, type AiActionId } from './ai-actions';
 import { hasPartialSessionMetadata, loadSession, loadSettings, saveSession, saveSettings, type SavedDocument, type Session, type Settings } from './storage';
 import { chooseRestoreText, classifyDraft, nextJournalSequence, type DraftInput, type RecoveryRelation } from './recovery-journal';
-import { clearAllDrafts, commitDraft, deleteDraftsFor, readRecoveryDrafts } from './recovery-journal-store';
+import { clearAllDrafts, commitDraft, deleteDraftsFor, readRecoveryDrafts, updateDraftCursor } from './recovery-journal-store';
 import { decideRestore, planRecoveryReview } from './recovery-review';
 import { buildAccessRows, pathInside, type AccessRow, type PanelFolder } from './access-panel';
 import { isAccessRevokedError, listRevokedFolders, restoreFolderAccess, revokeFolderAccess } from './access-revocation';
@@ -37,7 +39,7 @@ import { INDEXABLE_EXTENSIONS, MAX_INDEX_FILE_BYTES, NoteIndex } from './note-in
 import { CoalescingQueue, resolveSavedNote, type SavedNoteTarget } from './note-index-update';
 import { buildMinimapBars, minimapAvailable, viewportFraction } from './minimap';
 import { focusAnnouncement, focusClassList, focusLabel, isAnyFocusActive, FOCUS_CLASSES, type FocusSettings } from './focus-mode';
-import { DEFAULT_CAPTURE_SNIPPET, DEFAULT_DAILY_TEMPLATE, MAX_CAPTURE_CHARS, expandDailyTemplate, humanDate, isoTime, dailyNotePath, isSafeRelativePath } from './daily';
+import { DEFAULT_CAPTURE_SNIPPET, DEFAULT_CAPTURE_SUFFIX, DEFAULT_DAILY_TEMPLATE, MAX_CAPTURE_CHARS, expandDailyTemplate, humanDate, isoTime, dailyNotePath, isSafeRelativePath } from './daily';
 
 const $ = <T extends HTMLElement = HTMLElement>(selector: string): T => {
   const value = document.querySelector<T>(selector);
@@ -48,8 +50,12 @@ const el = <T extends keyof HTMLElementTagNameMap>(tag: T, className = ''): HTML
   const element = document.createElement(tag); if (className) element.className = className; return element;
 };
 const uuid = () => crypto.randomUUID();
-/** Identifies the exact text and file format a draft holds, so unchanged tabs are not rewritten. */
-const journalKeyOf = (text: string, encoding: TextEncoding, lineEnding: LineEnding, cursor: number): string => [text, encoding, lineEnding, cursor].join('\u0000');
+/**
+ * Identifies the exact text and file format a draft holds, so unchanged tabs are not rewritten.
+ * The caret is deliberately not part of the key: it changes on every click and is stored by a
+ * small manifest-only update instead of re-sending the document. See `writeJournal`.
+ */
+const journalKeyOf = (text: string, encoding: TextEncoding, lineEnding: LineEnding): string => [text, encoding, lineEnding].join('\u0000');
 /** Coalesce rapid saves before rebuilding the folder index off the keystroke path. */
 const NOTE_INDEX_REFRESH_DELAY_MS = 300;
 
@@ -72,8 +78,10 @@ interface Doc {
   revision: number;
   /** AUD-02: sequence of the last draft written for this tab; -1 before any write. */
   journalSeq: number;
-  /** Text, encoding, line ending and cursor last written to the draft journal; null when no draft exists. */
+  /** Text, encoding and line ending last written to the draft journal; null when no draft exists. */
   journalKey: string | null;
+  /** Caret last stored with that draft. Written without touching the chunks when only it changes. */
+  journalCursor: number | null;
 }
 interface ConfirmButton { id: string; label: string; style?: 'primary' | 'danger'; }
 
@@ -97,6 +105,8 @@ class WrytroveApp {
   private recoveryMetadataSaved = false;
   private partialRecovery = false;
   private journaledIds = new Set<string>();
+  /** Identity of the last written session snapshot, excluding document text. */
+  private sessionKey = '';
   private diskChecks = new Map<string, 'changed' | 'unavailable'>();
   /** Tabs whose recovered draft conflicts with the file on disk. The draft is kept until the user resolves it. */
   private pendingReview = new Map<string, { draft: DraftInput; relation: RecoveryRelation }>();
@@ -214,7 +224,8 @@ class WrytroveApp {
           const draft = drafts.get(doc.id);
           if (!draft) continue;
           doc.journalSeq = draft.sequence;
-          doc.journalKey = journalKeyOf(draft.text, draft.encoding, draft.lineEnding, draft.cursor);
+          doc.journalKey = journalKeyOf(draft.text, draft.encoding, draft.lineEnding);
+          doc.journalCursor = draft.cursor;
           this.journaledIds.add(doc.id);
         }
         if (this.docs.length) {
@@ -268,7 +279,7 @@ class WrytroveApp {
       lineEnding, savedLineEnding: options.savedLineEnding || lineEnding,
       mixedLineEndings: !!options.mixed, hash: options.hash || null,
       override: options.override || null, sample: !!options.sample, saving: false, revision: 0,
-      journalSeq: -1, journalKey: null,
+      journalSeq: -1, journalKey: null, journalCursor: null,
     };
   }
 
@@ -342,6 +353,23 @@ class WrytroveApp {
     }
   }
 
+  /**
+   * Everything the session snapshot stores except document text. Comparing this is cheap (no text
+   * is serialized) and decides whether a snapshot rewrite is needed.
+   *
+   * Carets stay in the key: for a clean tab the snapshot is the only place the caret survives a
+   * restart, because clean tabs have no draft. Text lives in the draft journal, which is why a
+   * draft-only caret move does not have to be repeated here.
+   */
+  private sessionMetaKey(): string {
+    return JSON.stringify([this.activeId, this.docs.map((doc) => [
+      doc.id, doc.name, refPath(doc.ref), doc.hash, doc.encoding, doc.savedEncoding,
+      doc.lineEnding, doc.savedLineEnding, doc.mixedLineEndings, doc.override, doc.sample,
+      doc.ref?.kind ?? null, doc.state.doc.eq(doc.savedDoc) ? 'clean' : 'dirty',
+      doc.state.selection.main.head,
+    ])]);
+  }
+
   private snapshot(): Session {
     return {
       version: 1, activeId: this.activeId,
@@ -401,12 +429,16 @@ class WrytroveApp {
    * Write drafts for changed tabs and remove drafts for tabs that are closed or clean.
    * Each write is atomic in the journal, so a failure keeps the last complete draft.
    */
-  private async writeJournal(): Promise<{ saved: boolean; quotaExceeded: boolean }> {
+  private async writeJournal(): Promise<{ saved: boolean; quotaExceeded: boolean; textChanged: boolean }> {
     const open = new Set(this.docs.map((doc) => doc.id));
+    // True when any document's text, format or draft presence changed. A flush that only moved a
+    // caret leaves the session snapshot valid, so the caller can skip rewriting it.
+    let textChanged = false;
     for (const id of [...this.journaledIds]) {
       if (open.has(id)) continue;
       await deleteDraftsFor(id);
       this.journaledIds.delete(id);
+      textChanged = true;
     }
     for (const doc of this.docs) {
       // A draft under review is kept until the user resolves it, even though the tab text matches the snapshot.
@@ -415,25 +447,37 @@ class WrytroveApp {
         if (doc.journalKey !== null) {
           await deleteDraftsFor(doc.id);
           doc.journalKey = null;
+          doc.journalCursor = null;
           this.journaledIds.delete(doc.id);
+          textChanged = true;
         }
         continue;
       }
       const text = doc.state.doc.toString();
       const cursor = doc.state.selection.main.head;
-      const key = journalKeyOf(text, doc.encoding, doc.lineEnding, cursor);
-      if (doc.journalKey === key) continue;
+      const key = journalKeyOf(text, doc.encoding, doc.lineEnding);
+      if (doc.journalKey === key) {
+        // Same text and format: store only the caret. Re-sending every chunk here is what made a
+        // click in a long document cost a full draft write.
+        if (doc.journalSeq >= 0 && doc.journalCursor !== cursor) {
+          const moved = await updateDraftCursor(doc.id, doc.journalSeq, cursor);
+          doc.journalCursor = moved ? cursor : null;
+        }
+        continue;
+      }
       const sequence = nextJournalSequence(doc.journalSeq, Date.now());
       const result = await commitDraft({
         docId: doc.id, pathToken: null, baseHash: doc.hash, sequence, timestamp: Date.now(),
         encoding: doc.encoding, lineEnding: doc.lineEnding, cursor, text,
       });
-      if (!result.saved) return { saved: false, quotaExceeded: result.quotaExceeded };
+      if (!result.saved) return { saved: false, quotaExceeded: result.quotaExceeded, textChanged: true };
+      textChanged = true;
       doc.journalSeq = sequence;
       doc.journalKey = key;
+      doc.journalCursor = cursor;
       this.journaledIds.add(doc.id);
     }
-    return { saved: true, quotaExceeded: false };
+    return { saved: true, quotaExceeded: false, textChanged };
   }
 
   private async flushRecovery(): Promise<boolean> {
@@ -450,7 +494,12 @@ class WrytroveApp {
         this.renderRecoveryStatus(); this.renderStorageWarning();
         return false;
       }
+      // The snapshot repeats every open document's text. When neither the text (journal) nor the
+      // session metadata changed, rewriting it would cost a full copy of the session for nothing.
+      const snapshotKey = this.sessionMetaKey();
+      if (!journal.textChanged && snapshotKey === this.sessionKey) return true;
       const result = await saveSession(this.snapshot());
+      if (result.saved) this.sessionKey = snapshotKey;
       if (!result.saved && !this.recoveryFailed) this.toast('Could not save a local recovery copy. Save your work to a file.');
       this.recoveryFailed = !result.saved;
       this.recoveryQuotaExceeded = result.quotaExceeded;
@@ -470,9 +519,10 @@ class WrytroveApp {
     if (!desktop || !this.view || !this.activeId) return;
     const doc = this.active;
     if (doc.ref?.kind !== 'native' || doc.saving) { this.renderDiskChange(); return; }
-    const path = doc.ref.path, hash = doc.hash, identity = doc.ref.identity;
-    const result = await checkNativeFileChange(path, hash, identity);
-    if (serial !== this.diskCheckSerial || this.activeId !== doc.id || doc.ref?.kind !== 'native' || doc.ref.path !== path || doc.ref.identity !== identity || doc.hash !== hash || doc.saving) return;
+    const path = doc.ref.path, hash = doc.hash, identity = doc.ref.identity, version = doc.ref.version;
+    // The version probe is a metadata comparison; only a mismatch costs a full read and hash.
+    const result = await checkNativeFileChange(path, hash, identity, version);
+    if (serial !== this.diskCheckSerial || this.activeId !== doc.id || doc.ref?.kind !== 'native' || doc.ref.path !== path || doc.ref.identity !== identity || doc.ref.version !== version || doc.hash !== hash || doc.saving) return;
     if (result === 'unchanged') this.diskChecks.delete(doc.id);
     else this.diskChecks.set(doc.id, result);
     this.renderDiskChange();
@@ -730,8 +780,12 @@ class WrytroveApp {
       const encodingAtSave = doc.encoding, endingAtSave = doc.lineEnding;
       const bytes = encodeFile(textAtSave.toString(), encodingAtSave, endingAtSave);
       let sameTarget = await this.sameRef(doc.ref, target.ref);
-      if (sameTarget && doc.ref?.kind === 'native' && target.ref.kind === 'native') target.ref.identity = doc.ref.identity;
-      let expected = sameTarget ? doc.hash : null;
+      // Only a save over the file this tab was opened from may carry its recorded identity.
+      const adoptIdentity = (chosen: { name: string; ref: FileRef }) => {
+        if (sameTarget && doc.ref?.kind === 'native' && chosen.ref.kind === 'native') chosen.ref.identity = doc.ref.identity;
+      };
+      adoptIdentity(target);
+      let expected = saveAttempt({ sameTarget, hash: doc.hash }).expected;
       let outcome: WriteOutcome;
       for (;;) {
         try { outcome = await writeTo(target.ref, bytes, target.name, expected); break; }
@@ -740,16 +794,17 @@ class WrytroveApp {
           const choice = await this.confirm('File changed on disk', `“${target.name}” already exists, changed outside Wrytrove, was removed, or its original identity is unavailable. Overwriting may lose changes.`, [
             { id: 'cancel', label: 'Cancel' }, { id: 'save-as', label: 'Save a copy' }, { id: 'overwrite', label: 'Overwrite', style: 'danger' },
           ], 'CHECK BEFORE SAVING');
-          if (choice === 'cancel') return false;
-          if (choice === 'save-as') {
+          const step = planConflictRetry(choice as ConflictChoice);
+          if (!step.retry) return false;
+          if (step.chooseTarget) {
             const newTarget = await chooseSaveTarget(doc.name); if (!newTarget) return false;
-            target = newTarget; sameTarget = await this.sameRef(doc.ref, target.ref); expected = sameTarget ? doc.hash : null;
-            if (sameTarget && doc.ref?.kind === 'native' && target.ref.kind === 'native') target.ref.identity = doc.ref.identity;
+            target = newTarget; sameTarget = await this.sameRef(doc.ref, target.ref);
+            expected = saveAttempt({ sameTarget, hash: doc.hash }).expected;
+            adoptIdentity(target);
             // Even choosing the same file or an existing copy must be checked again.
             continue;
           }
-          if (choice !== 'overwrite') return false;
-          outcome = await writeTo(target.ref, bytes, target.name, expected, true); break;
+          outcome = await writeTo(target.ref, bytes, target.name, expected, step.force); break;
         }
       }
       if (outcome.nativeMetadata) this.reportNativeSaveMetadata(target.name, outcome.nativeMetadata);
@@ -776,10 +831,7 @@ class WrytroveApp {
 
   private async sameRef(a: FileRef | null, b: FileRef): Promise<boolean> {
     if (!a || a.kind !== b.kind) return false;
-    if (a.kind === 'native' && b.kind === 'native') {
-      const key = (path: string) => /^(?:[a-z]:[\\/]|\\\\)/iu.test(path) ? path.replace(/\//gu, '\\').toLowerCase() : path;
-      return key(a.path) === key(b.path);
-    }
+    if (a.kind === 'native' && b.kind === 'native') return sameNativePath(a.path, b.path);
     if (a.kind === 'browser' && b.kind === 'browser') {
       if (a.handle === b.handle) return true;
       try {
@@ -1500,7 +1552,7 @@ class WrytroveApp {
   private capturePath(): string {
     const raw = this.settings.capturePath.trim();
     const candidate = /\.md$/iu.test(raw) ? raw : `${raw}.md`;
-    return raw && isSafeRelativePath(candidate) ? candidate : 'Inbox.md';
+    return raw && isSafeRelativePath(candidate) ? candidate : DEFAULT_CAPTURE_SUFFIX;
   }
 
   private openCapture(): void {
@@ -2467,11 +2519,9 @@ class WrytroveApp {
       if (event.key === 'Escape') { event.preventDefault(); this.closeMenus(); trigger?.focus(); return; }
       if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) && items.length) {
         event.preventDefault();
-        const current = items.indexOf(document.activeElement as HTMLButtonElement);
-        const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1
-          : current < 0 ? (event.key === 'ArrowDown' ? 0 : items.length - 1)
-          : (current + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
-        items[next].focus(); return;
+        const next = menuMove(event.key, items.indexOf(document.activeElement as HTMLButtonElement), items.length);
+        if (next !== null) items[next].focus();
+        return;
       }
     }
     if (event.key === 'Escape') {
@@ -2498,17 +2548,6 @@ class WrytroveApp {
       return;
     }
     if (mod && event.shiftKey && event.code === 'KeyO') { event.preventDefault(); event.stopPropagation(); this.showTabOutline(); return; }
-    if (mod && !event.altKey && ['b', 'i', 'k'].includes(key) && !event.shiftKey) {
-      // Ctrl+B means "bold" only where bold can exist: a Markdown note with a real selection.
-      // Everywhere else it keeps its documented "toggle sidebar" behaviour.
-      const markdownBuffer = isMarkdownName(this.active.name);
-      const hasSelection = !!this.view && this.view.state.selection.main.from !== this.view.state.selection.main.to;
-      if (key !== 'b' || (markdownBuffer && hasSelection)) {
-        event.preventDefault(); event.stopPropagation();
-        this.runFormat(key === 'b' ? 'bold' : key === 'i' ? 'italic' : 'link');
-        return;
-      }
-    }
     if (mod && event.shiftKey && /^Digit[1-6]$/u.test(event.code)) {
       event.preventDefault(); event.stopPropagation();
       this.runFormat(`heading-${event.code.slice(-1)}`);
@@ -2529,8 +2568,18 @@ class WrytroveApp {
     if (event.shiftKey && (key === 'f' || key === 'p')) {
       event.preventDefault(); event.stopPropagation(); void this.handleAction(key === 'f' ? 'find-files' : 'command-palette'); return;
     }
-    const map: Record<string, string> = { n: 'new', o: 'open', s: event.shiftKey ? 'save-as' : 'save', w: 'close', f: 'find', h: 'replace', b: 'sidebar', p: 'quick-open', g: 'goto-line', ',': 'settings' };
-    if (map[key] && (!event.shiftKey || key === 's')) { event.preventDefault(); event.stopPropagation(); void this.handleAction(map[key]); }
+    const resolved = modShortcut({
+      key, shiftKey: event.shiftKey, altKey: event.altKey,
+      // Ctrl+B means "bold" only where bold can exist: a Markdown note with a real selection.
+      // Everywhere else it keeps its documented "toggle sidebar" behaviour.
+      // Guarded: this runs on every Ctrl chord, including ones with no active document.
+      markdownBuffer: isMarkdownName(this.active?.name ?? ''),
+      hasSelection: !!this.view && this.view.state.selection.main.from !== this.view.state.selection.main.to,
+    });
+    if (!resolved) return;
+    event.preventDefault(); event.stopPropagation();
+    if (resolved.kind === 'format') this.runFormat(resolved.format);
+    else void this.handleAction(resolved.action);
   }
 
   private bindBrowserDrop(): void {
@@ -2546,7 +2595,7 @@ class WrytroveApp {
         const failures: OpenFailure[] = [];
         for (const file of Array.from(event.dataTransfer!.files)) {
           try {
-            if (file.size > MAX_FILE_BYTES) throw new Error('This file is larger than the 20 MiB safety limit.');
+            if (file.size > MAX_FILE_BYTES) throw new Error(`This file is larger than the ${MAX_FILE_MIB} MiB safety limit.`);
             await this.addOpened({ name: file.name, bytes: new Uint8Array(await file.arrayBuffer()), ref: { kind: 'download' } });
           } catch (error) { failures.push({ name: file.name, message: this.errorText(error) }); }
         }

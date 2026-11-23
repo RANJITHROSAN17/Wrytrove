@@ -12,6 +12,8 @@ mod save_transaction;
 
 use save_transaction::{PermissionAction, SaveCommit, SaveFailure, SavePhase};
 
+/// Authored once in `limits.json` (shared with `src/encoding.ts`); `max_file_bytes_matches_the_shared_limit`
+/// keeps this constant honest.
 const MAX_FILE_BYTES: usize = 20 * 1024 * 1024;
 const LARGE_FILE_PREFIX: &str = "WRYTROVE_LARGE_FILE: ";
 const MAX_DIRECTORY_ENTRIES: usize = 2_000;
@@ -425,6 +427,37 @@ async fn workspace_read_file(app: tauri::AppHandle, path: String, max_bytes: usi
     Ok(tauri::ipc::Response::new(response))
 }
 
+/// Cheap change probe for an already-authorized path: one stat plus an identity lookup, with no
+/// file contents crossing IPC. The version is a hint, not proof — a same-length rewrite inside one
+/// filesystem timestamp tick produces the same value — so it only ever short-circuits to
+/// "unchanged"; any mismatch sends the webview back to reading and hashing the bytes, which stays
+/// authoritative. The probe reuses `large_file`'s fingerprint so both features agree on identity.
+fn file_version(path: &Path) -> Result<serde_json::Value, String> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(serde_json::json!({ "exists": false, "version": null }));
+        }
+        Err(err) => return Err(format!("Cannot inspect file: {err}")),
+    };
+    // A link, reparse point or non-regular file is reported as absent rather than probed.
+    if is_link_or_reparse(&metadata) || !metadata.is_file() {
+        return Ok(serde_json::json!({ "exists": false, "version": null }));
+    }
+    let (_, opened) = open_regular_file(path)?;
+    Ok(serde_json::json!({ "exists": true, "version": large_file::fingerprint(&opened)? }))
+}
+
+/// Version-only probe so a window-focus check costs one stat instead of a full read and hash.
+#[tauri::command]
+async fn workspace_file_version(app: tauri::AppHandle, path: String) -> Result<serde_json::Value, String> {
+    let path = PathBuf::from(path);
+    check_read_path(&app, &path)?;
+    tauri::async_runtime::spawn_blocking(move || file_version(&path))
+        .await
+        .map_err(|err| format!("File task failed: {err}"))?
+}
+
 /// A conservative, cross-platform single component; rejects Windows device names
 /// and alternate data streams even when running tests on another operating system.
 fn valid_new_entry_name(name: &str) -> bool {
@@ -567,7 +600,7 @@ pub fn run() {
             collect_launch_files(app.handle(), std::env::args().collect(), &cwd);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![safe_write, take_launch_files, workspace_list_directory, workspace_read_file, large_file_inspect, large_file_range, workspace_create_entry, journal_key_load, access_revoke, access_restore, access_revoked_list])
+        .invoke_handler(tauri::generate_handler![safe_write, take_launch_files, workspace_list_directory, workspace_read_file, workspace_file_version, large_file_inspect, large_file_range, workspace_create_entry, journal_key_load, access_revoke, access_restore, access_revoked_list])
         .run(tauri::generate_context!())
         .expect("error while running Wrytrove");
 }
@@ -640,6 +673,13 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), b"new");
     }
     #[test]
+    fn max_file_bytes_matches_the_shared_limit() {
+        let shared: serde_json::Value =
+            serde_json::from_str(include_str!("../../limits.json")).expect("limits.json must be valid JSON");
+        let authored = shared["maxFileBytes"].as_u64().expect("limits.json must define maxFileBytes");
+        assert_eq!(authored as usize, MAX_FILE_BYTES);
+    }
+    #[test]
     fn save_aborts_when_destination_changes_before_commit() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("file.txt");
@@ -687,6 +727,29 @@ mod tests {
         assert_eq!(next.permissions, PermissionAction::CopiedToTemp);
         atomic_write_checked(&path, b"three", &sha256_hex(b"two"), false, next.identity).unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"three");
+    }
+    #[test]
+    fn file_version_probe_is_cheap_stable_and_reports_absence() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file.txt");
+        fs::write(&path, b"one").unwrap();
+        let first = file_version(&path).unwrap();
+        assert_eq!(first["exists"], serde_json::json!(true));
+        // The same unchanged file must report the same version, or every focus would look like a change.
+        assert_eq!(file_version(&path).unwrap(), first);
+        // A length change always changes the version, independent of timestamp granularity.
+        fs::write(&path, b"three").unwrap();
+        assert_ne!(file_version(&path).unwrap(), first);
+        // A missing file is reported, not treated as an error the caller has to guess at.
+        fs::remove_file(&path).unwrap();
+        assert_eq!(file_version(&path).unwrap(), serde_json::json!({ "exists": false, "version": null }));
+        // Links are never probed, matching the read path.
+        #[cfg(unix)]
+        {
+            let link = dir.path().join("link");
+            std::os::unix::fs::symlink("/dev/null", &link).unwrap();
+            assert_eq!(file_version(&link).unwrap()["exists"], serde_json::json!(false));
+        }
     }
     #[test]
     fn missing_identity_never_authorizes_a_normal_overwrite() {

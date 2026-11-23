@@ -87,9 +87,8 @@ export function extractOutline(source: string, options: { underline?: boolean } 
     previousLineNumber = lineNumber;
     offset += line.length + 1;
     lineNumber++;
-    // Keep scanning after the cap only to find a closing fence is unnecessary; stop early but
-    // still report `truncated` so the UI can say the outline is incomplete.
-    if (truncated && lineNumber > 0) { /* keep the cheap loop; no allocations happen */ }
+    // Once the cap is hit the remaining lines are still scanned (no allocations happen) so that
+    // `truncated` is reported truthfully; the UI then says the outline is incomplete.
   }
   return { headings, truncated, partial };
 }

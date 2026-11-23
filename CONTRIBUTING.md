@@ -8,7 +8,7 @@ MSVC Build Tools or WebView2 to make a meaningful contribution.
 
 ```bash
 npm ci
-npm test          # 71 unit tests, ~2 seconds
+npm test          # the full vitest suite (48 files); no Windows needed
 npm run build     # typecheck + bundle
 ```
 
@@ -40,11 +40,13 @@ or close and reopen the PR.
 
 | Path | What belongs there |
 | --- | --- |
-| `src/` | the editor. `main.ts` (1,105 lines) wires the UI; `workbench.ts` (791) owns the workspace |
+| `src/` | the editor. `main.ts` wires the UI; `workbench.ts` owns the workspace |
 | `src/encoding.ts` | decode/encode, BOMs, line endings — pure functions over `Uint8Array` |
 | `src/markdown-render.ts` | Markdown to a bounded, inert preview tree |
 | `src/sensitive-text.ts` | the credential-shape warning. Fallible by design; see the README |
 | `src-tauri/` | the Rust shell. Small on purpose |
+| `scripts/` | repo tooling: the roadmap drift check, the static security audit, benchmarks |
+| `limits.json` | shared budgets. The 20 MiB editable-file limit is authored here, read by `src/encoding.ts`, and enforced by `src-tauri/src/lib.rs` |
 | `tests/*.test.ts` | vitest. Must pass on every OS |
 | `tests/e2e/*.spec.ts` | Playwright against the browser build |
 
@@ -73,10 +75,10 @@ command you ran. Screenshots for UI changes.
 
 Include your Windows version, steps to reproduce, and expected versus actual behaviour. **Never
 paste API keys, private files or sensitive text into a public issue** — see
-[`SECURITY.md`](../SECURITY.md) for the private channel.
+[`SECURITY.md`](SECURITY.md) for the private channel.
 
 ## Not sure where to start?
 
-The [`good first issue`](https://github.com/RANJITHROSAN17/morrow-editor/labels/good%20first%20issue)
+The [`good first issue`](https://github.com/RANJITHROSAN17/Wrytrove/labels/good%20first%20issue)
 label holds tasks that are fully specified — file path, acceptance criteria, and a command that
 proves it — and that do not require Windows. Comment on one and it is yours.

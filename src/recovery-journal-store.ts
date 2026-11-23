@@ -319,6 +319,62 @@ export async function readRecoveryDrafts(ring: JournalKeyRing | null = null): Pr
   });
 }
 
+async function readManifestRow(docId: string, sequence: number): Promise<ManifestRow | null> {
+  const db = await open();
+  const tx = db.transaction(MANIFESTS, 'readonly');
+  const row = await req(tx.objectStore(MANIFESTS).get([docId, sequence])) as ManifestRow | undefined;
+  return row ?? null;
+}
+
+async function writeManifestRow(row: ManifestRow): Promise<void> {
+  await writeAtomically([MANIFESTS], (tx) => { tx.objectStore(MANIFESTS).put(row); });
+}
+
+/**
+ * Update only the caret position stored with an existing complete draft.
+ *
+ * Moving the caret must not re-send the document. This writes one small manifest row instead of
+ * every content chunk, so a session that is mostly reading and clicking costs a few hundred
+ * bytes per flush instead of the whole file. Returns false when nothing changed or the entry
+ * cannot be read (missing, sealed without a key, or implausible cursor); the caller may then
+ * write a full draft instead.
+ */
+export function updateDraftCursor(
+  docId: string, sequence: number, cursor: number, ring: JournalKeyRing | null = null,
+): Promise<boolean> {
+  if (typeof docId !== 'string' || !docId || !Number.isSafeInteger(sequence) || sequence < 0
+    || !Number.isSafeInteger(cursor) || cursor < 0) {
+    return Promise.resolve(false);
+  }
+  return serial(async () => {
+    try {
+      const row = await readManifestRow(docId, sequence);
+      if (!row) return false;
+      let next: ManifestRow;
+      if (isSealedManifestRow(row)) {
+        if (!ring) return false;
+        const opened = await openText(row.sealed, ring, { kind: 'manifest', docId: row.docId, sequence: row.sequence });
+        const parsed: unknown = JSON.parse(opened);
+        if (!isValidManifest(parsed) || parsed.docId !== row.docId || parsed.sequence !== row.sequence) return false;
+        if (parsed.cursor === cursor) return false;
+        // Only the manifest is re-sealed; every chunk stays exactly as it was written.
+        const sealed = await sealText(JSON.stringify({ ...parsed, cursor }), ring, { kind: 'manifest', docId: row.docId, sequence: row.sequence });
+        next = { ...row, sealed };
+      } else if (isValidManifest(row)) {
+        if (row.cursor === cursor) return false;
+        next = { ...row, cursor };
+      } else {
+        return false;
+      }
+      await writeManifestRow(next);
+      return true;
+    } catch {
+      // A cursor is a convenience, never a reason to report that recovery failed.
+      return false;
+    }
+  });
+}
+
 /** Remove every journal entry for one document, e.g. after the user discards a draft. Needs no key. */
 export function deleteDraftsFor(docId: string): Promise<void> {
   return serial(async () => {

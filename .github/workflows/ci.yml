@@ -21,7 +21,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version-file: '.nvmrc'
           cache: npm
 
       - name: Install dependencies
@@ -44,3 +44,40 @@ jobs:
 
       - name: Frontend production build
         run: npm run build
+
+  e2e:
+    name: Browser end-to-end (Playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: '.nvmrc'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install headless Chromium
+        run: npx playwright install --only-shell chromium
+
+      - name: Browser regression suite
+        run: |
+          set -o pipefail
+          npm run test:e2e 2>&1 | tee e2e-output.txt
+
+      - name: Report browser test failures as annotations
+        if: ${{ failure() }}
+        run: |
+          if [ ! -f e2e-output.txt ]; then
+            echo '::error title=Browser tests::No Playwright output was captured.'
+            exit 0
+          fi
+          # Surface a bounded, escaped excerpt so a failure can be diagnosed from the job page
+          # without downloading the full log.
+          excerpt=$(tail -n 60 e2e-output.txt | sed -e 's/%/%25/g' -e 's/\r/%0D/g' | awk 'BEGIN{ORS="%0A"} {print}')
+          echo "::error title=Browser tests::${excerpt}"

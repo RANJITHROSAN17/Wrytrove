@@ -26,7 +26,7 @@ export const DEFAULT_DAILY_TEMPLATE = [
 
 export const DEFAULT_CAPTURE_SUFFIX = 'Inbox.md';
 export const DEFAULT_CAPTURE_SNIPPET = [
-  '## Captured',
+  CAPTURE_HEADING,
   '',
   '- {{time}} — ',
   '',
