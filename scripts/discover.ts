@@ -1,3 +1,6 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+
 /**
  * discover — turn a reviewed backlog into a queue of *startable* work.
  *
@@ -83,8 +86,27 @@ export function scoreItem(item: RoadmapItem): ItemScore {
 
 export interface DriftFinding {
   id: string;
-  kind: 'missing-file' | 'already-done' | 'duplicate-scope' | 'shipped-without-release' | 'dependency-unmet' | 'windows-only';
+  kind: 'missing-file' | 'missing-verify-path' | 'already-done' | 'duplicate-scope' | 'shipped-without-release' | 'dependency-unmet' | 'windows-only';
   message: string;
+}
+
+/**
+ * Findings that make the roadmap unusable and therefore fail the check. `windows-only` is
+ * reported but not fatal: an item can legitimately need Windows to verify.
+ */
+export const FATAL_DRIFT_KINDS: readonly DriftFinding['kind'][] = [
+  'missing-file', 'missing-verify-path', 'shipped-without-release', 'duplicate-scope', 'dependency-unmet',
+];
+
+/** Repository-relative paths a shell command mentions, so a stale `verify` is caught too. */
+export function verifyPaths(command: string): string[] {
+  const found = new Set<string>();
+  for (const match of command.matchAll(/(?:^|[\s'"`=(])((?:src|src-tauri|scripts|tests|docs)\/[A-Za-z0-9._\-/]+)/gu)) {
+    // Trailing punctuation belongs to the sentence, not the path.
+    const path = match[1].replace(/[.,;:)\]}'"]+$/u, '');
+    if (path && /\.[A-Za-z0-9]+$/u.test(path)) found.add(path);
+  }
+  return [...found];
 }
 
 /**
@@ -98,10 +120,8 @@ export function findDrift(
   const findings: DriftFinding[] = [];
   const byFiles = new Map<string, RoadmapItem[]>();
   for (const item of roadmap.items) {
-    if (item.status === 'shipped') {
-      if (!item.release) findings.push({ id: item.id, kind: 'shipped-without-release', message: `shipped item has no release tag; the bot cannot close its issue` });
-      continue;
-    }
+    // Shipped items keep their file and verification claims, so those are checked for them too.
+    // (This is how a shipped item ended up naming a test file that never existed.)
     for (const file of item.files ?? []) {
       if (/^(?:src|src-tauri|scripts|tests|docs)\//u.test(file) && !tree.exists(file)) {
         findings.push({ id: item.id, kind: 'missing-file', message: `named path '${file}' does not exist; the issue would send a contributor to a dead file` });
@@ -111,6 +131,15 @@ export function findDrift(
         list.push(item);
         byFiles.set(file, list);
       }
+    }
+    for (const path of verifyPaths(item.verify ?? '')) {
+      if (!tree.exists(path)) {
+        findings.push({ id: item.id, kind: 'missing-verify-path', message: `verification command references '${path}', which does not exist; the command cannot prove anything` });
+      }
+    }
+    if (item.status === 'shipped') {
+      if (!item.release) findings.push({ id: item.id, kind: 'shipped-without-release', message: `shipped item has no release tag; the bot cannot close its issue` });
+      continue;
     }
     if ((item.files ?? []).some((file) => WINDOWS_ONLY.test(file))) {
       findings.push({ id: item.id, kind: 'windows-only', message: 'needs Windows/Rust to verify; cannot be filed as a Windows-free first issue' });
@@ -230,4 +259,40 @@ export function summarizeHealth(roadmap: Roadmap, findings: DriftFinding[]): str
     findings.length ? `${findings.length} drift finding(s)` : 'no drift',
   ];
   return parts.join(' · ');
+}
+
+/* ---------------------------------------------------------------------------------------- *
+ * CLI: `npm run roadmap:drift` (also `node --import tsx scripts/discover.ts`).
+ * Fails on findings that make the manifest unusable, so a stale `files`/`verify` entry cannot
+ * reach a contributor. `windows-only` stays a warning: an item may legitimately need Windows.
+ * ---------------------------------------------------------------------------------------- */
+
+function runCli(): number {
+  const roadmapPath = process.argv[2] ?? '.github/roadmap.json';
+  if (!existsSync(roadmapPath)) {
+    console.error(`Roadmap manifest not found: ${roadmapPath}`);
+    return 1;
+  }
+  const roadmap = JSON.parse(readFileSync(roadmapPath, 'utf8')) as Roadmap;
+  const findings = findDrift(roadmap, {
+    exists: (path) => existsSync(path),
+    readFile: (path) => (existsSync(path) ? readFileSync(path, 'utf8') : null),
+  });
+  console.log(`roadmap drift: ${summarizeHealth(roadmap, findings)}`);
+  const fatal = findings.filter((finding) => FATAL_DRIFT_KINDS.includes(finding.kind));
+  for (const finding of findings) {
+    const severity = FATAL_DRIFT_KINDS.includes(finding.kind) ? 'error' : 'warning';
+    console.log(`- ${severity} [${finding.kind}] ${finding.id}: ${finding.message}`);
+  }
+  const steps = sequenceWork(roadmap).slice(0, 5);
+  if (steps.length) console.log(`next up: ${steps.map((step) => step.id).join(', ')}`);
+  if (fatal.length) {
+    console.error(`\n${fatal.length} fatal drift finding(s). Fix the manifest before filing issues.`);
+    return 1;
+  }
+  return 0;
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  process.exitCode = runCli();
 }

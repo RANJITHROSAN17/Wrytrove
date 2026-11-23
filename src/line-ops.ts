@@ -90,11 +90,18 @@ export function moveLines(text: string, span: Span, direction: 'up' | 'down'): T
   const moved = [nextLine, ...block.lines];
   const insert = moved.join('\n');
   const shift = nextLine.length + 1;
+  // The moved block now ends at block.start + insert.length. A selection that ended on the
+  // final newline of the block would otherwise be shifted past the end of the document, which
+  // makes CodeMirror reject the whole transaction ("Selection points outside of document") and
+  // the command silently does nothing. Clamp both ends to the new block.
+  const blockEndAfter = block.start + insert.length;
+  const from = Math.max(block.start, Math.min(span.from + shift, blockEndAfter));
+  const to = Math.max(from, Math.min(span.to + shift, blockEndAfter));
   return {
     from: block.start,
     to: nextEnd,
     insert,
-    selection: { from: span.from + shift, to: span.to + shift },
+    selection: { from, to },
   };
 }
 

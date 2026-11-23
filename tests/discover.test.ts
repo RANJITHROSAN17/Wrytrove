@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { findDrift, renderSequence, REQUIRED_BODY_MARKERS, scoreItem, sequenceWork, summarizeHealth, type Roadmap, type RoadmapItem } from '../src/discover';
+import { FATAL_DRIFT_KINDS, findDrift, renderSequence, REQUIRED_BODY_MARKERS, scoreItem, sequenceWork, summarizeHealth, verifyPaths, type Roadmap, type RoadmapItem } from '../scripts/discover';
 
 const fullBody = REQUIRED_BODY_MARKERS.map((marker) => `${marker}\ntext`).join('\n');
 
@@ -91,8 +91,35 @@ describe('drift detection', () => {
     ]), tree([])).some((finding) => finding.kind === 'dependency-unmet')).toBe(true);
   });
 
+  it('checks the verification command as well as the named files', () => {
+    // A `verify` command that points at a file nobody created proves nothing.
+    const findings = findDrift(roadmap([item({ files: ['src/editor.ts'], verify: 'npx vitest run tests/never-written.test.ts' })]), tree(['src/editor.ts']));
+    expect(findings).toContainEqual(expect.objectContaining({ kind: 'missing-verify-path', id: 'wrytrove-x' }));
+  });
+
+  it('checks files and verification paths for shipped items too', () => {
+    // This is the exact bug the old skip caused: a shipped item's test file had been renamed.
+    const findings = findDrift(
+      roadmap([item({ status: 'shipped', release: 'v0.4.0', files: ['tests/gone.test.ts'], verify: 'npx vitest run tests/gone.test.ts' })]),
+      tree([]),
+    );
+    expect(findings).toContainEqual(expect.objectContaining({ kind: 'missing-file' }));
+    expect(findings).toContainEqual(expect.objectContaining({ kind: 'missing-verify-path' }));
+  });
+
   it('finds no drift in a clean manifest', () => {
-    expect(findDrift(roadmap([item()]), tree(['src/editor.ts']))).toEqual([]);
+    expect(findDrift(roadmap([item()]), tree(['src/editor.ts', 'tests/editor.test.ts']))).toEqual([]);
+  });
+
+  it('extracts repository paths from a shell command without false positives', () => {
+    expect(verifyPaths('npx vitest run tests/markdown-render.test.ts && npm run build')).toEqual(['tests/markdown-render.test.ts']);
+    expect(verifyPaths("grep -n 'npm test' CONTRIBUTING.md")).toEqual([]);
+    expect(verifyPaths('npm run build')).toEqual([]);
+    expect(verifyPaths('npx vitest run tests/a.test.ts tests/b.test.ts')).toEqual(['tests/a.test.ts', 'tests/b.test.ts']);
+  });
+
+  it('keeps the Windows-only finding a warning, not a fatal one', () => {
+    expect(FATAL_DRIFT_KINDS).not.toContain('windows-only');
   });
 });
 

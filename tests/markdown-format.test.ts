@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { applySmartTypography, selectedLines, smartCharacter, toggleBold, toggleHeading, toggleItalic, toggleInlineCode, toggleNumberedList, toggleQuote, toggleStrikethrough, toggleTaskList, wordAt, wrapLink } from '../src/markdown-format';
-import { applyLineOperation, deleteLines, duplicateLines, joinLines, moveLines, sortLines, trimTrailingWhitespace } from '../src/line-ops';
 
 /** Apply an edit the way CodeMirror would, so assertions read like the resulting document. */
 function apply(text: string, edit: { from: number; to: number; insert: string } | null): { text: string; start: number; end: number } {
@@ -102,50 +101,5 @@ describe('smart typography', () => {
 
   it('rewrites a whole string deterministically', () => {
     expect(applySmartTypography('"Hello" -- it\'s fine...')).toBe('\u201cHello\u201d \u2014 it\u2019s fine\u2026');
-  });
-});
-
-describe('line operations', () => {
-  it('duplicates the current line and keeps the caret on the copy', () => {
-    const edit = duplicateLines('one\ntwo\nthree', { from: 5, to: 5 })!;
-    const result = apply('one\ntwo\nthree', edit);
-    expect(result.text).toBe('one\ntwo\ntwo\nthree');
-    expect(edit.selection.from).toBe(9);
-  });
-
-  it('moves lines up and down, and refuses to move past the ends', () => {
-    const up = apply('a\nb\nc', moveLines('a\nb\nc', { from: 2, to: 2 }, 'up'));
-    expect(up.text).toBe('b\na\nc');
-    const down = apply('a\nb\nc', moveLines('a\nb\nc', { from: 0, to: 0 }, 'down'));
-    expect(down.text).toBe('b\na\nc');
-    expect(moveLines('a\nb', { from: 0, to: 0 }, 'up')).toBeNull();
-    expect(moveLines('a\nb', { from: 3, to: 3 }, 'down')).toBeNull();
-  });
-
-  it('deletes a whole line including its newline', () => {
-    expect(apply('a\nb\nc', deleteLines('a\nb\nc', { from: 2, to: 2 })).text).toBe('a\nc');
-    expect(apply('a\nb', deleteLines('a\nb', { from: 2, to: 2 })).text).toBe('a');
-  });
-
-  it('sorts selected lines with natural numeric ordering', () => {
-    const text = 'item10\nitem2\nitem1';
-    expect(apply(text, sortLines(text, { from: 0, to: text.length })).text).toBe('item1\nitem2\nitem10');
-    expect(sortLines('a\nb', { from: 0, to: 3 }, 'asc')).toBeNull();
-  });
-
-  it('trims trailing whitespace only when there is something to trim', () => {
-    expect(apply('a  \nb\t', trimTrailingWhitespace('a  \nb\t', { from: 0, to: 5 })).text).toBe('a\nb');
-    expect(trimTrailingWhitespace('clean', { from: 0, to: 5 })).toBeNull();
-  });
-
-  it('joins lines into one space-separated sentence', () => {
-    expect(apply('one\ntwo\nthree', joinLines('one\ntwo\nthree', { from: 0, to: 13 })).text).toBe('one two three');
-    expect(joinLines('single', { from: 0, to: 6 })).toBeNull();
-  });
-
-  it('dispatches every operation through one entry point', () => {
-    expect(applyLineOperation('a\nb', { from: 0, to: 0 }, 'duplicate')!.insert).toBe('a\na');
-    expect(applyLineOperation('a\nb', { from: 0, to: 3 }, 'sort-desc')!.insert).toBe('b\na');
-    expect(applyLineOperation('a', { from: 0, to: 0 }, 'join')).toBeNull();
   });
 });

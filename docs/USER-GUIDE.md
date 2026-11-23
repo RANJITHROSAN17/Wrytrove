@@ -32,7 +32,7 @@ Example buffers are intentionally labeled **SAMPLE**. They are editable but are 
 
 ## Run the Windows application from source
 
-**Prerequisites:** Windows 10/11 x64, Node.js 20 or newer, Rust stable (1.90+), Microsoft C++ Build Tools with **Desktop development with C++**, and the Microsoft Edge WebView2 runtime. See [Tauri's Windows prerequisites](https://v2.tauri.app/start/prerequisites/).
+**Prerequisites:** Windows 10/11 x64, Node.js 22 or newer, Rust stable (1.90+), Microsoft C++ Build Tools with **Desktop development with C++**, and the Microsoft Edge WebView2 runtime. See [Tauri's Windows prerequisites](https://v2.tauri.app/start/prerequisites/).
 
 Open PowerShell in this project directory:
 

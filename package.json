@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "description": "A small, local-first text and code editor for Windows.",
+  "engines": {
+    "node": ">=22.0.0",
+    "npm": ">=10.0.0"
+  },
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc --noEmit && vite build",
@@ -24,7 +28,9 @@
     "study:fixtures": "node scripts/validation/study-evidence.mjs fixtures research/val-05",
     "study:fixtures:write": "node scripts/validation/study-evidence.mjs fixtures research/val-05 --write",
     "tauri": "tauri",
-    "ai:eval": "node --import tsx scripts/validation/run-ai-eval.ts"
+    "ai:eval": "node --import tsx scripts/validation/run-ai-eval.ts",
+    "validate:roadmap": "node scripts/validate-roadmap.js .github/roadmap.json",
+    "roadmap:drift": "node --import tsx scripts/discover.ts .github/roadmap.json"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.20.0",

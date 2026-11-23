@@ -39,11 +39,6 @@ export function wordAt(text: string, span: Span): Span {
   return { from, to };
 }
 
-// Kept for compatibility with callers that already expanded the caret themselves.
-export function expandToWord(text: string, span: Span): Span {
-  return wordAt(text, span);
-}
-
 /** `**` + selection + `**`, or remove both wrappers when the selection already has them. */
 function toggleWrap(text: string, span: Span, marker: string): TextEdit | null {
   const selected = text.slice(span.from, span.to);
@@ -79,9 +74,6 @@ export function toggleBold(text: string, span: Span): TextEdit | null {
 
 export function toggleItalic(text: string, span: Span): TextEdit | null {
   const word = wordAt(text, span);
-  // `_` inside a word is not emphasis in most parsers (snake_case), so use `*` when the wrapped
-  // text would sit next to a word character.
-  // `_` inside a word is not emphasis in most parsers, so fall back to `*`.
   // `_` inside a word is not emphasis in most parsers (snake_case), so use `*` whenever the
   // wrapped text would sit next to a word character.
   const marker = word.from > 0 && WORD.test(text[word.from - 1]) ? '*' : '_';
@@ -97,10 +89,6 @@ export function toggleInlineCode(text: string, span: Span): TextEdit | null {
 
 export function toggleStrikethrough(text: string, span: Span): TextEdit | null {
   return toggleWrap(text, wordAt(text, span), '~~');
-}
-
-export function toggleHighlight(text: string, span: Span): TextEdit | null {
-  return toggleWrap(text, wordAt(text, span), '==');
 }
 
 /** Line-based helpers share this shape: they operate on the whole selected lines. */

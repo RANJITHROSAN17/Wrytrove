@@ -40,6 +40,7 @@
     "allow-take-launch-files",
     "allow-workspace-list-directory",
     "allow-workspace-read-file",
+    "allow-workspace-file-version",
     "allow-large-file-inspect",
     "allow-large-file-range",
     "allow-workspace-create-entry",

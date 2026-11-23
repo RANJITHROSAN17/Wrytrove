@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildJournalEntry, CHUNK_CHARS, type DraftInput } from '../src/recovery-journal';
-import { clearAllDrafts, commitDraft, deleteDraftsFor, JOURNAL_DB, readRecoveryDrafts } from '../src/recovery-journal-store';
+import { clearAllDrafts, commitDraft, deleteDraftsFor, JOURNAL_DB, readRecoveryDrafts, updateDraftCursor } from '../src/recovery-journal-store';
 import { generateJournalKey, type JournalKeyRing } from '../src/recovery-crypto';
 
 const draft = (docId: string, sequence: number, text: string): DraftInput => ({
@@ -139,6 +139,46 @@ describe('draft journal store', () => {
     expect(drafts.some((d) => d.docId === id)).toBe(false);
     expect(await rowsFor('manifests', id)).toBe(0);
     expect(await rowsFor('journal', id)).toBe(0);
+  });
+
+  describe('caret-only updates', () => {
+    it('moves the stored caret without rewriting the document chunks', async () => {
+      const id = 'cursor-only';
+      const text = 'a'.repeat(CHUNK_CHARS) + 'tail';
+      expect(await commitDraft(draft(id, 1, text))).toMatchObject({ saved: true });
+      const chunksBefore = JSON.stringify(await rawRows('journal', id));
+      expect(await updateDraftCursor(id, 1, 42)).toBe(true);
+      const restored = (await readRecoveryDrafts()).drafts.find((d) => d.docId === id);
+      expect(restored).toMatchObject({ cursor: 42, text, sequence: 1 });
+      // The point of the operation: no chunk row was rewritten or added.
+      expect(JSON.stringify(await rawRows('journal', id))).toBe(chunksBefore);
+      expect(await rowsFor('journal', id)).toBe(2);
+      expect(await rowsFor('manifests', id)).toBe(1);
+    });
+
+    it('is a no-op for the same caret, a missing entry or an implausible cursor', async () => {
+      const id = 'cursor-noop';
+      await commitDraft(draft(id, 1, 'text'));
+      expect(await updateDraftCursor(id, 1, 0)).toBe(false);
+      expect(await updateDraftCursor(id, 99, 1)).toBe(false);
+      expect(await updateDraftCursor(id, 1, -1)).toBe(false);
+      expect(await updateDraftCursor(id, 1, Number.NaN)).toBe(false);
+      expect((await readRecoveryDrafts()).drafts.find((d) => d.docId === id)).toMatchObject({ cursor: 0 });
+    });
+
+    it('re-seals only the manifest when encryption is on', async () => {
+      const id = 'cursor-sealed';
+      const ring = await ringOf('k1', ['k1']);
+      await commitDraft(draft(id, 1, 'sealed text'), ring);
+      const chunksBefore = JSON.stringify(await rawRows('journal', id));
+      // Without the key the caret cannot be updated, and nothing is written.
+      expect(await updateDraftCursor(id, 1, 7, null)).toBe(false);
+      expect(await updateDraftCursor(id, 1, 7, ring)).toBe(true);
+      expect(JSON.stringify(await rawRows('journal', id))).toBe(chunksBefore);
+      expect((await readRecoveryDrafts(ring)).drafts.find((d) => d.docId === id)).toMatchObject({ cursor: 7, text: 'sealed text' });
+      // The caret is only readable with the key, so the sealed manifest stays opaque.
+      expect(JSON.stringify(await rawRows('manifests', id))).not.toContain('sealed text');
+    });
   });
 
   describe('encrypted drafts (AUD-03)', () => {

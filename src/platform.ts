@@ -1,12 +1,17 @@
 import { isTauri, invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import { MAX_FILE_BYTES, sha256 } from './encoding';
+import { MAX_FILE_BYTES, MAX_FILE_MIB, sha256 } from './encoding';
 
 export const desktop = isTauri();
 
 // The File System Access API is present in current Chromium/WebView2, but not all TS DOM versions.
 type BrowserPicker = { showOpenFilePicker?: (options?: { multiple?: boolean }) => Promise<FileSystemFileHandle[]>; showSaveFilePicker?: (options?: { suggestedName?: string }) => Promise<FileSystemFileHandle> };
-export type FileRef = { kind: 'native'; path: string; identity?: string } | { kind: 'browser'; handle: FileSystemFileHandle } | { kind: 'download' };
+/**
+ * `identity` is the per-file token used to refuse unsafe overwrites; `version` is a cheap
+ * metadata probe (size, modification time, identity) recorded when the bytes were read. The
+ * version only decides whether a full re-read is worth doing; the hash stays authoritative.
+ */
+export type FileRef = { kind: 'native'; path: string; identity?: string; version?: string } | { kind: 'browser'; handle: FileSystemFileHandle } | { kind: 'download' };
 export interface OpenedFile { name: string; bytes: Uint8Array; ref: FileRef; displayPath?: string; }
 export interface OpenFailure { name: string; message: string; }
 export interface OpenFilesResult { files: OpenedFile[]; failures: OpenFailure[]; }
@@ -30,7 +35,7 @@ export function fileName(path: string): string {
 }
 
 function checkSize(size: number): void {
-  if (size > MAX_FILE_BYTES) throw new Error('This file is larger than the 20 MiB safety limit.');
+  if (size > MAX_FILE_BYTES) throw new Error(`This file is larger than the ${MAX_FILE_MIB} MiB safety limit.`);
 }
 
 export class NativeFileTooLargeError extends Error {}
@@ -54,11 +59,44 @@ export async function readNative(path: string, editableLimit?: number, offerLarg
   if (!/^[0-9a-f]{32}$/u.test(token) && token !== '-'.repeat(32)) throw new Error('Invalid native file identity.');
   const bytes = framed.slice(32);
   if (bytes.length > (editableLimit ?? MAX_FILE_BYTES)) throw new NativeFileTooLargeError('File exceeded the editable size budget.');
-  return { name: fileName(path), bytes, ref: { kind: 'native', path, identity: token === '-'.repeat(32) ? undefined : token } };
+  const ref: FileRef = { kind: 'native', path, identity: token === '-'.repeat(32) ? undefined : token };
+  // Recorded so a later focus check can compare metadata instead of re-reading the file.
+  const version = await readNativeFileVersion(path);
+  if (version) ref.version = version;
+  return { name: fileName(path), bytes, ref };
+}
+
+/**
+ * Read the native version probe: size, modification time and identity in one metadata call, with
+ * no file contents in the response. Null means "cannot be determined", which makes callers fall
+ * back to the full read-and-hash check rather than guessing.
+ */
+export async function readNativeFileVersion(path: string): Promise<string | null> {
+  try {
+    const result = await invoke<{ exists?: unknown; version?: unknown }>('workspace_file_version', { path });
+    const version = result?.version;
+    return typeof version === 'string' && version.length > 0 && version.length <= 200 && !/[\u0000-\u001f]/u.test(version)
+      ? version
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Check only an already-authorized native path; keep read failures distinct from no change. */
-export async function checkNativeFileChange(path: string, expectedHash: string | null, expectedIdentity?: string): Promise<'changed' | 'unchanged' | 'unavailable'> {
+export async function checkNativeFileChange(
+  path: string,
+  expectedHash: string | null,
+  expectedIdentity?: string,
+  expectedVersion?: string,
+): Promise<'changed' | 'unchanged' | 'unavailable'> {
+  // Fast path: identical size, modification time and identity means the bytes did not change, so
+  // a focus check costs one metadata call instead of transferring and hashing the whole file.
+  // Anything else (including an unknown version) falls through to the authoritative hash.
+  if (expectedVersion) {
+    const version = await readNativeFileVersion(path);
+    if (version !== null && version === expectedVersion) return 'unchanged';
+  }
   try {
     const file = await readNative(path);
     const hash = await sha256(file.bytes);
@@ -217,6 +255,8 @@ export async function writeTo(ref: FileRef, bytes: Uint8Array, name: string, exp
     nativeMetadata = { permissions: permissions === 'copied_to_temp' || permissions === 'not_applied' ? permissions : 'unknown' };
     // Null means the write committed but the next normal save needs conflict handling.
     ref.identity = identity ?? undefined;
+    // Re-probe the metadata the new file has, so the next focus check can skip the full read.
+    ref.version = (await readNativeFileVersion(ref.path)) ?? undefined;
   } else if (ref.kind === 'browser') {
     if (expectedHash && !force) {
       const current = await ref.handle.getFile();

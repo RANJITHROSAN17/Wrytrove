@@ -9,8 +9,9 @@
     "noEmit": true,
     "useDefineForClassFields": true,
     "isolatedModules": true,
+    "resolveJsonModule": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true
   },
-  "include": ["src", "tests", "scripts/validation/*.ts", "vite.config.ts"]
+  "include": ["src", "tests", "scripts/discover.ts", "scripts/validation/*.ts", "vite.config.ts"]
 }
