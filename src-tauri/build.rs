@@ -6,6 +6,7 @@ fn main() {
         "take_launch_files",
         "workspace_list_directory",
         "workspace_read_file",
+        "workspace_file_version",
         "large_file_inspect",
         "large_file_range",
         "workspace_create_entry",
