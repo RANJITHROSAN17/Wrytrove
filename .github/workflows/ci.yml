@@ -66,4 +66,18 @@ jobs:
         run: npx playwright install --only-shell chromium
 
       - name: Browser regression suite
-        run: npm run test:e2e
+        run: |
+          set -o pipefail
+          npm run test:e2e 2>&1 | tee e2e-output.txt
+
+      - name: Report browser test failures as annotations
+        if: ${{ failure() }}
+        run: |
+          if [ ! -f e2e-output.txt ]; then
+            echo '::error title=Browser tests::No Playwright output was captured.'
+            exit 0
+          fi
+          # Surface a bounded, escaped excerpt so a failure can be diagnosed from the job page
+          # without downloading the full log.
+          excerpt=$(tail -n 60 e2e-output.txt | sed -e 's/%/%25/g' -e 's/\r/%0D/g' | awk 'BEGIN{ORS="%0A"} {print}')
+          echo "::error title=Browser tests::${excerpt}"
