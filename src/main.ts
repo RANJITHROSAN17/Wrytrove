@@ -105,7 +105,7 @@ class WrytroveApp {
   private recoveryMetadataSaved = false;
   private partialRecovery = false;
   private journaledIds = new Set<string>();
-  /** Identity of the last written session snapshot, excluding document text and carets. */
+  /** Identity of the last written session snapshot, excluding document text. */
   private sessionKey = '';
   private diskChecks = new Map<string, 'changed' | 'unavailable'>();
   /** Tabs whose recovered draft conflicts with the file on disk. The draft is kept until the user resolves it. */
@@ -354,14 +354,19 @@ class WrytroveApp {
   }
 
   /**
-   * Everything the session snapshot stores except document text and carets. Comparing this is
-   * cheap (no text is serialized), and it is what decides whether a snapshot rewrite is needed.
+   * Everything the session snapshot stores except document text. Comparing this is cheap (no text
+   * is serialized) and decides whether a snapshot rewrite is needed.
+   *
+   * Carets stay in the key: for a clean tab the snapshot is the only place the caret survives a
+   * restart, because clean tabs have no draft. Text lives in the draft journal, which is why a
+   * draft-only caret move does not have to be repeated here.
    */
   private sessionMetaKey(): string {
     return JSON.stringify([this.activeId, this.docs.map((doc) => [
       doc.id, doc.name, refPath(doc.ref), doc.hash, doc.encoding, doc.savedEncoding,
       doc.lineEnding, doc.savedLineEnding, doc.mixedLineEndings, doc.override, doc.sample,
       doc.ref?.kind ?? null, doc.state.doc.eq(doc.savedDoc) ? 'clean' : 'dirty',
+      doc.state.selection.main.head,
     ])]);
   }
 
@@ -489,8 +494,8 @@ class WrytroveApp {
         this.renderRecoveryStatus(); this.renderStorageWarning();
         return false;
       }
-      // The snapshot repeats every open document's text. When the journal already holds the only
-      // change (a caret move), rewriting it would cost a full copy of the session for nothing.
+      // The snapshot repeats every open document's text. When neither the text (journal) nor the
+      // session metadata changed, rewriting it would cost a full copy of the session for nothing.
       const snapshotKey = this.sessionMetaKey();
       if (!journal.textChanged && snapshotKey === this.sessionKey) return true;
       const result = await saveSession(this.snapshot());

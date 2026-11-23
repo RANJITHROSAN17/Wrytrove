@@ -498,8 +498,12 @@ textarea:focus-visible { outline: 2px solid var(--accent-strong); outline-offset
 @media (max-width: 800px) {
   .brand { width: 150px; min-width: 150px; }
   .top-search, .top-separator, .breadcrumb-root, .crumb-sep { display: none; }
-  .top-actions { gap: 5px; }
-  .ai-top-button { white-space: nowrap; flex: none; }
+  /* The compact bar has to fit the window with any font stack, not just Segoe UI's metrics: when
+     the labels do not fit, the labelled buttons shrink and ellipsize instead of pushing the
+     Settings control past the right edge. At widths where the bar already fits, nothing changes. */
+  .top-actions { gap: 5px; min-width: 0; }
+  .arena-top-button, .ai-top-button { white-space: nowrap; flex: 0 1 auto; min-width: 0; }
+  .arena-top-button > span:nth-child(2), .ai-top-button > span:nth-child(2) { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 }
 @media (max-width: 650px) {
   .brand { width: auto; min-width: 0; margin-right: 12px; }
