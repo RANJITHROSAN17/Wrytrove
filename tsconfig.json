@@ -13,5 +13,5 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true
   },
-  "include": ["src", "tests", "scripts/discover.ts", "scripts/validation/*.ts", "vite.config.ts"]
+  "include": ["src", "tests", "scripts/discover.ts", "scripts/validation/*.ts", "vite.config.ts", "vitest.config.ts", "playwright.config.ts"]
 }
