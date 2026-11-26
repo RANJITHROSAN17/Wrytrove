@@ -4,6 +4,15 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#141720" />
+  <!-- Browser-preview CSP (the Tauri app enforces its own policy in tauri.conf.json).
+       No remote origins: the preview serves only same-origin assets; AI calls go through
+       the Tauri HTTP plugin (Rust) and are never browser fetches. `ws:`/`wss:` exist solely
+       for Vite dev-server HMR and match nothing in a production build. `frame-ancestors`
+       cannot be expressed in a meta tag and is covered by the Tauri CSP instead. -->
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ws: wss:; worker-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"
+  />
   <title>Wrytrove — text, without the noise</title>
 </head>
 <body>

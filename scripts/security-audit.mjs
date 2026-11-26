@@ -6,14 +6,17 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const failures = [];
 const warnings = [];
 
+/** @param {string} path */
 async function text(path) {
   return readFile(resolve(root, path), 'utf8');
 }
 
+/** @param {string} label @param {string} value @param {RegExp} pattern */
 function requireMatch(label, value, pattern) {
   if (!pattern.test(value)) failures.push(`${label}: expected ${pattern}`);
 }
 
+/** @param {string} label @param {string} value @param {RegExp} pattern */
 function forbidMatch(label, value, pattern) {
   if (pattern.test(value)) failures.push(`${label}: forbidden pattern ${pattern}`);
 }
@@ -31,11 +34,24 @@ if (capabilities?.webviews?.length !== 1 || capabilities.webviews[0] !== 'main')
   failures.push('capabilities: native permissions must be scoped only to the bundled main webview');
 }
 
+const indexHtml = await text('index.html');
+const browserCspMatch = indexHtml.match(/http-equiv="Content-Security-Policy"[^>]*content="([^"]+)"/u);
+if (!browserCspMatch) {
+  failures.push('index.html: the browser preview is missing its Content-Security-Policy meta tag');
+} else {
+  const browserCsp = browserCspMatch[1];
+  for (const directive of ["default-src 'self'", "script-src 'self'", "worker-src 'self'", "object-src 'none'", "frame-src 'none'", "base-uri 'none'", "form-action 'none'"]) {
+    requireMatch(`Browser CSP ${directive}`, browserCsp, new RegExp(directive.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  }
+  forbidMatch('Browser CSP remote script source', browserCsp, /script-src[^;]*(?:https?:|\/\/)/u);
+  forbidMatch('Browser CSP wildcard source', browserCsp, /\s\*/u);
+}
+
 const permissions = capabilities.permissions ?? [];
-const httpPermission = permissions.find((permission) => typeof permission === 'object' && permission.identifier === 'http:default');
-const openerPermission = permissions.find((permission) => typeof permission === 'object' && permission.identifier === 'opener:allow-open-url');
-const httpUrls = httpPermission?.allow?.map((entry) => entry.url).sort() ?? [];
-const openerUrls = openerPermission?.allow?.map((entry) => entry.url).sort() ?? [];
+const httpPermission = permissions.find((/** @type {any} */ permission) => typeof permission === 'object' && permission.identifier === 'http:default');
+const openerPermission = permissions.find((/** @type {any} */ permission) => typeof permission === 'object' && permission.identifier === 'opener:allow-open-url');
+const httpUrls = httpPermission?.allow?.map((/** @type {any} */ entry) => entry.url).sort() ?? [];
+const openerUrls = openerPermission?.allow?.map((/** @type {any} */ entry) => entry.url).sort() ?? [];
 const expectedHttp = [
   'http://127.0.0.1:11434/api/generate',
   'http://127.0.0.1:11434/api/tags',
@@ -52,6 +68,7 @@ for (const url of [...httpUrls, ...openerUrls]) {
   if (/[\*]|\.\./u.test(url)) failures.push(`capability URL is not exact: ${url}`);
 }
 
+/** @param {string} directory @param {string} [relative] @returns {Promise<string[]>} */
 async function sourceFiles(directory, relative = '') {
   const entries = await readdir(directory, { withFileTypes: true });
   const paths = [];
@@ -68,7 +85,7 @@ const sourcePaths = await sourceFiles(resolve(root, 'src'), 'src');
 sourcePaths.sort();
 for (const relative of sourcePaths) {
   const source = await text(relative);
-  for (const [label, pattern] of [
+  for (const [label, pattern] of /** @type {[string, RegExp][]} */ ([
     ['dynamic code evaluation', /\beval\s*\(/u],
     ['Function constructor', /\bnew\s+Function\s*\(/u],
     ['document.write', /\bdocument\.write\s*\(/u],
@@ -76,7 +93,7 @@ for (const relative of sourcePaths) {
     ['HTML string insertion', /\binsertAdjacentHTML\s*\(/u],
     ['outerHTML replacement', /\bouterHTML\s*=/u],
     ['React raw HTML escape hatch', /dangerouslySetInnerHTML/u],
-  ]) {
+  ])) {
     forbidMatch(`${relative} (${label})`, source, pattern);
   }
 }

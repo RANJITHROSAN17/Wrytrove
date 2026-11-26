@@ -30,7 +30,7 @@
     "tauri": "tauri",
     "ai:eval": "node --import tsx scripts/validation/run-ai-eval.ts",
     "validate:roadmap": "node scripts/validate-roadmap.js .github/roadmap.json",
-    "check:scripts": "tsc --noEmit -p tsconfig.scripts.json",
+    "check:scripts": "tsc --noEmit -p tsconfig.scripts.json && tsc --noEmit -p tsconfig.scripts-strict.json",
     "roadmap:drift": "node --import tsx scripts/discover.ts .github/roadmap.json"
   },
   "dependencies": {

@@ -1,0 +1,17 @@
+{
+  "extends": "./tsconfig.scripts.json",
+  "compilerOptions": {
+    "noImplicitAny": true
+  },
+  "include": [
+    "benchmarks/shared/**/*.mjs",
+    "tests/val02-fixtures.node.mjs",
+    "scripts/benchmark-table.mjs",
+    "scripts/benchmark-large-file.mjs",
+    "scripts/roadmap-bots.js",
+    "scripts/security-audit.mjs",
+    "scripts/validate-roadmap.js",
+    "scripts/validation/capture-state.mjs",
+    "scripts/validation/val02-fixtures.mjs"
+  ]
+}

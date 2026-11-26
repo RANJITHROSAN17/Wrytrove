@@ -45,7 +45,7 @@ or close and reopen the PR.
 | `src/markdown-render.ts` | Markdown to a bounded, inert preview tree |
 | `src/sensitive-text.ts` | the credential-shape warning. Fallible by design; see the README |
 | `src-tauri/` | the Rust shell. Small on purpose |
-| `scripts/` | repo tooling: the roadmap drift check, the static security audit, benchmarks (typechecked by `npm run check:scripts`) |
+| `scripts/` | repo tooling: the roadmap drift check, the static security audit, benchmarks (two-pass typecheck: relaxed pass over everything, strict `noImplicitAny` over the annotated subset) |
 | `limits.json` | shared budgets. The 20 MiB editable-file limit is authored here, read by `src/encoding.ts`, and enforced by `src-tauri/src/lib.rs` |
 | `tests/*.test.ts` | vitest. Must pass on every OS |
 | `tests/e2e/*.spec.ts` | Playwright against the browser build |

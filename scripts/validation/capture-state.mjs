@@ -15,12 +15,15 @@ import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /** Build a sorted snapshot of a quiescent synthetic tree, without following recognized links. */
+/** @param {string} root */
 export async function snapshot(root) {
   const rootInfo = await lstat(root);
   if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) {
     throw new Error('Snapshot root must be a real directory, not a link.');
   }
+  /** @type {Record<string, unknown>[]} */
   const entries = [];
+  /** @param {string} dir */
   async function walk(dir) {
     const names = (await readdir(dir)).sort();
     for (const name of names) {
@@ -54,18 +57,23 @@ export async function snapshot(root) {
 }
 
 /** Compare two snapshots. Returns added, removed and changed entries (paths and their fields). */
+/** @param {{ entries: Record<string, any>[] }} before @param {{ entries: Record<string, any>[] }} after */
 export function diffSnapshots(before, after) {
+  /** @param {Record<string, any>} e */
   const key = (e) => e.path;
-  const a = new Map(before.entries.map((e) => [key(e), e]));
-  const b = new Map(after.entries.map((e) => [key(e), e]));
+  const a = new Map(before.entries.map((/** @type {Record<string, any>} */ e) => [key(e), e]));
+  const b = new Map(after.entries.map((/** @type {Record<string, any>} */ e) => [key(e), e]));
+  /** @type {string[]} */
   const added = [];
+  /** @type {string[]} */
   const removed = [];
+  /** @type {{ path: string, fields: string[] }[]} */
   const changed = [];
   for (const [path, entry] of b) {
     if (!a.has(path)) added.push(path);
     else {
       const old = a.get(path);
-      const fields = ['type', 'size', 'sha256', 'target', 'readOnly', 'mtimeMs'].filter((f) => old[f] !== entry[f]);
+      const fields = ['type', 'size', 'sha256', 'target', 'readOnly', 'mtimeMs'].filter((/** @type {string} */ f) => old[f] !== entry[f]);
       if (fields.length) changed.push({ path, fields });
     }
   }
@@ -73,6 +81,7 @@ export function diffSnapshots(before, after) {
   return { added, removed, changed, identical: !added.length && !removed.length && !changed.length };
 }
 
+/** @param {string[]} argv */
 async function main(argv) {
   const [command, first, second] = argv;
   if (command === 'snapshot' && first && second) {

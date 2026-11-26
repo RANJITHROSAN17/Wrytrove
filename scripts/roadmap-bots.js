@@ -19,6 +19,7 @@ const ROADMAP_MARKER_RE = /<!--\s*roadmap:([A-Za-z0-9_-]+)\s*-->/;
 const LEGACY_ROADMAP_PREFIX = "morrow-";
 const ROADMAP_PREFIX = "wrytrove-";
 
+/** @param {string[]} argv @param {string} flag @param {string} [fallback] */
 function argValue(argv, flag, fallback = "") {
   const idx = argv.indexOf(flag);
   return idx !== -1 && idx + 1 < argv.length ? argv[idx + 1] : fallback;
@@ -28,12 +29,14 @@ export function loadRoadmap(path = join(ROOT, ".github/roadmap.json")) {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
+/** @param {string} [body] */
 export function extractMarkerId(body) {
   const m = ROADMAP_MARKER_RE.exec(String(body || ""));
   if (!m) return null;
   return m[1].startsWith(LEGACY_ROADMAP_PREFIX) ? ROADMAP_PREFIX + m[1].slice(LEGACY_ROADMAP_PREFIX.length) : m[1];
 }
 
+/** @param {any} roadmap @param {string} [repoRoot] */
 export function detectDrift(roadmap, repoRoot = ROOT) {
   const notes = [];
   for (const item of roadmap.items || []) {
@@ -56,9 +59,10 @@ export function detectDrift(roadmap, repoRoot = ROOT) {
   return notes;
 }
 
+/** @param {any} roadmap @param {any[]} [issues] @param {string} [repoRoot] */
 export function renderStatusMarkdown(roadmap, issues = [], repoRoot = ROOT) {
   const items = roadmap.items || [];
-  const shipped = items.filter((i) => i.status === "shipped");
+  const shipped = items.filter((/** @type {any} */ i) => i.status === "shipped");
   const openByMarker = new Map();
   const closedMarkers = new Set();
 
@@ -70,16 +74,16 @@ export function renderStatusMarkdown(roadmap, issues = [], repoRoot = ROOT) {
     else closedMarkers.add(id);
   }
 
-  const active = items.filter((i) => openByMarker.has(i.id));
+  const active = items.filter((/** @type {any} */ i) => openByMarker.has(i.id));
   const queued = items.filter(
-    (i) =>
+    (/** @type {any} */ i) =>
       i.status !== "shipped" &&
       !openByMarker.has(i.id) &&
       !closedMarkers.has(i.id),
   );
   const doneCount =
     shipped.length +
-    [...closedMarkers].filter((id) => !shipped.some((s) => s.id === id)).length;
+    [...closedMarkers].filter((id) => !shipped.some((/** @type {any} */ s) => s.id === id)).length;
   const total = items.length || 1;
   const filled = Math.round((doneCount / total) * 20);
   const bar = "#".repeat(filled) + ".".repeat(Math.max(0, 20 - filled));
@@ -123,14 +127,14 @@ export function renderStatusMarkdown(roadmap, issues = [], repoRoot = ROOT) {
       "|---|---|---|---|",
     );
     for (const item of queued.slice(0, 6)) {
-      const winFree = (item.files || []).some((f) => f.startsWith("src-tauri/")) ? "Windows/Rust" : "Yes (any OS)";
+      const winFree = (item.files || []).some((/** @type {string} */ f) => f.startsWith("src-tauri/")) ? "Windows/Rust" : "Yes (any OS)";
       lines.push(`| \`${item.id}\` | ${item.title} | ${item.difficulty} | ${winFree} |`);
     }
     lines.push("");
   }
 
   const drift = detectDrift(roadmap, repoRoot);
-  const closedUnmarked = items.filter((i) => i.status !== "shipped" && closedMarkers.has(i.id));
+  const closedUnmarked = items.filter((/** @type {any} */ i) => i.status !== "shipped" && closedMarkers.has(i.id));
   if (drift.length || closedUnmarked.length) {
     lines.push("## Drift & maintenance notes", "");
     for (const d of drift) lines.push(`- ⚠️ ${d}`);
@@ -159,6 +163,7 @@ const AREA_RULES = [
   ["area/editor", /\b(editor|codemirror|encoding|utf-16|utf-32|bom|crlf|tab|cursor|storage|recovery|diff)\b/i],
 ];
 
+/** @param {string} [title] @param {string} [body] */
 export function classifyIssue(title, body) {
   const text = `${title || ""}\n${body || ""}`;
   const out = new Set();
@@ -173,6 +178,7 @@ export function classifyIssue(title, body) {
   return [...out];
 }
 
+/** @param {string[]} files @param {number} [totalLines] */
 export function labelsForChangedFiles(files, totalLines = 0) {
   const labels = new Set();
   for (const f of files) {
@@ -203,12 +209,13 @@ export function labelsForChangedFiles(files, totalLines = 0) {
   return [...labels];
 }
 
+/** @param {any} roadmap @param {string[]} changedFiles @param {string} [prBody] */
 export function renderPrContext(roadmap, changedFiles, prBody = "") {
   const changed = new Set(changedFiles.filter(Boolean));
   const matches = [];
   for (const item of roadmap.items || []) {
     if (item.status === "shipped") continue;
-    const hit = (item.files || []).filter((f) => changed.has(f));
+    const hit = (item.files || []).filter((/** @type {string} */ f) => changed.has(f));
     if (hit.length) matches.push({ item, hit });
   }
   const hasCloses = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#\d+/i.test(prBody || "");
@@ -219,7 +226,7 @@ export function renderPrContext(roadmap, changedFiles, prBody = "") {
     lines.push("", "Matched curated roadmap task(s):", "");
     for (const { item, hit } of matches) {
       lines.push(
-        `- **\`${item.id}\`** — ${item.title} (touched: ${hit.map((h) => `\`${h}\``).join(", ")})`,
+        `- **\`${item.id}\`** — ${item.title} (touched: ${hit.map((/** @type {string} */ h) => `\`${h}\``).join(", ")})`,
       );
       lines.push(`  - Verify locally: \`${item.verify || "npm test"}\``);
     }

@@ -9,8 +9,10 @@ import { readFileSync } from 'node:fs';
 
 const MIB = 1024 ** 2;
 const sizes = [100, 500];
+/** @param {number} mib */
 const filename = (mib) => `wrytrove-${mib}mib.log`;
 
+/** @param {string} dir @param {number} mib */
 async function fixture(dir, mib) {
   // 128-byte CRLF lines and a unique match in the final line; no giant buffers.
   const block = Buffer.alloc(MIB);
@@ -39,6 +41,7 @@ async function productionCore() {
   return `data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`;
 }
 
+/** @param {import('node:fs/promises').FileHandle} file @param {number} offset @param {number} length */
 async function readRange(file, offset, length) {
   const bytes = new Uint8Array(length);
   let total = 0;
@@ -50,17 +53,22 @@ async function readRange(file, offset, length) {
   return bytes;
 }
 
+/** @param {Worker} worker @param {unknown} data @param {any[]} [transfer] @returns {Promise<any>} */
 function request(worker, data, transfer = []) {
   return new Promise((resolve, reject) => {
     const cleanup = () => { worker.off('message', onMessage); worker.off('error', onError); worker.off('exit', onExit); };
+    /** @param {any} value */
     const onMessage = (value) => { cleanup(); resolve(value); };
+    /** @param {Error} error */
     const onError = (error) => { cleanup(); reject(error); };
+    /** @param {number} code */
     const onExit = (code) => onError(new Error(`Search worker exited (${code}).`));
     worker.once('message', onMessage).once('error', onError).once('exit', onExit);
     worker.postMessage(data, transfer);
   });
 }
 
+/** @param {string} path @param {number} mib */
 async function measure(path, mib) {
   const core = await productionCore();
   const { decodeLargePage, SEARCH_CHUNK } = await import(core);
