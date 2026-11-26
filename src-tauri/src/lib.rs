@@ -56,14 +56,22 @@ fn check_not_revoked(app: &tauri::AppHandle, path: &Path) -> Result<(), String> 
     access_revocation::ensure_access(&data_dir(app)?, path)
 }
 
-/// Revokes access to a folder. Callers must not revoke a folder that an open document still uses;
-/// the Access leases panel defers that case until the document closes.
-#[tauri::command]
-async fn access_revoke(app: tauri::AppHandle, path: String) -> Result<(), String> {
+/// Absolute paths with no `..` components are the only ones accepted at the access-record boundary.
+/// Rejects relative input rather than normalizing it, so a stored revocation always names the
+/// exact folder the user picked.
+fn require_absolute_no_parent(path: &str) -> Result<PathBuf, String> {
     let path = PathBuf::from(path);
     if !path.is_absolute() || path.components().any(|part| matches!(part, std::path::Component::ParentDir)) {
         return Err("Invalid folder path.".into());
     }
+    Ok(path)
+}
+
+/// Revokes access to a folder. Callers must not revoke a folder that an open document still uses;
+/// the Access leases panel defers that case until the document closes.
+#[tauri::command]
+async fn access_revoke(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let path = require_absolute_no_parent(&path)?;
     let dir = data_dir(&app)?;
     tauri::async_runtime::spawn_blocking(move || access_revocation::revoke(&dir, &path.to_string_lossy()))
         .await.map_err(|err| format!("Access task failed: {err}"))?
@@ -72,8 +80,9 @@ async fn access_revoke(app: tauri::AppHandle, path: String) -> Result<(), String
 /// Restores access to a folder after the user reopens it.
 #[tauri::command]
 async fn access_restore(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let path = require_absolute_no_parent(&path)?;
     let dir = data_dir(&app)?;
-    tauri::async_runtime::spawn_blocking(move || access_revocation::restore(&dir, &path))
+    tauri::async_runtime::spawn_blocking(move || access_revocation::restore(&dir, &path.to_string_lossy()))
         .await.map_err(|err| format!("Access task failed: {err}"))?
 }
 
@@ -678,6 +687,15 @@ mod tests {
             serde_json::from_str(include_str!("../../limits.json")).expect("limits.json must be valid JSON");
         let authored = shared["maxFileBytes"].as_u64().expect("limits.json must define maxFileBytes");
         assert_eq!(authored as usize, MAX_FILE_BYTES);
+    }
+    #[test]
+    fn access_path_validation_rejects_relative_and_parent_components() {
+        assert!(require_absolute_no_parent("notes/relative.md").is_err());
+        assert!(require_absolute_no_parent("").is_err());
+        let with_parent = if cfg!(windows) { "C:\\notes\\..\\secret" } else { "/notes/../secret" };
+        assert!(require_absolute_no_parent(with_parent).is_err());
+        let absolute = if cfg!(windows) { "C:\\notes\\folder" } else { "/notes/folder" };
+        assert!(require_absolute_no_parent(absolute).is_ok());
     }
     #[test]
     fn save_aborts_when_destination_changes_before_commit() {

@@ -24,6 +24,7 @@ Wrytrove is an early, free and open-source Windows text-editor prototype. It aim
 - Open Arena in your normal browser, prepare and explicitly copy a selected excerpt, then review a pasted response before applying it. Alternatively, the separate optional Arena API assistant can ask a question, propose a reviewed edit or compare two eligible models. API requests require confirmation and may cost money; Wrytrove does not automate or embed the website.
 - UTF-8 (with or without BOM), BOM-marked UTF-16 LE/BE, and LF/CRLF/CR detection and output. Invalid UTF-8, UTF-32 BOMs, and text containing NUL are rejected. The app cannot detect every binary or legacy-encoded file. Mixed line endings are flagged; saving normalizes them after confirmation.
 - Opt-out local session recovery, including unsaved content; local snapshots are **unencrypted** and are not a backup.
+- A writing surface for ordinary Markdown files: live word count and reading time, an optional daily word goal, quick capture to a folder note, daily notes from an expandable template, outline/tags/backlinks, a bounded local note index and focus/typewriter/zen modes. See **Notes and the writing surface**.
 - Optional, opt-in, single-line inline AI suggestions from a locally addressed Ollama server. Tab accepts a suggestion; Esc dismisses it. The active document's nearby text is sent to Ollama only after opt-in; see **Privacy** below.
 - Optional AI actions on one explicit selection (Improve, Fix grammar, Shorten, Expand, Summarize, Bullet points, Explain and Custom). Replace actions open the usual diff review; Explain is read-only. Only the selected text and your instruction are sent, after a separate per-session consent. See **AI actions on a selection** below.
 - Save-time external-change check and same-directory temporary-file replacement for native saves. This mitigates common accidental overwrites, but is not a transactional guarantee across all filesystems; see limitations below.
@@ -117,6 +118,30 @@ Use the **Preview** button, **View → Toggle Markdown preview**, or the command
 
 Parsing runs in a separate worker. To protect responsiveness, the preview refuses documents over 150,000 UTF-16 code units or output over 5,000 nodes, and stops waiting after eight seconds. These are preview-only limits: the buffer is unchanged and the editable-file limit still applies. The preview is not a security audit or a full CommonMark implementation. It was tested in Chromium and a Linux native WebKit smoke test; Windows WebView2 remains to be tested.
 
+## Notes and the writing surface
+
+Wrytrove has a writing side for ordinary Markdown files. The notes tools live in the **Notes** menu and the status bar and work on a folder you opened — notes stay `.md` files on disk, and nothing here uploads anything. If a tool needs a folder and none is open, the status bar says so instead of failing silently.
+
+**Live stats and the daily goal.** The status bar shows the word count and, on hover, characters and estimated reading time. Click **Settings → Daily writing goal → Set a goal…** (or the goal chip once one is set) to pick a target; only words you add count, deleting never subtracts, and the counter resets at local midnight. The chip shows progress and never blocks typing.
+
+**Quick capture (`Ctrl+Alt+N`).** Type a thought into the box and choose **Append** (or check *Make each line a task* to turn each line into a `- [ ]` item). The text is appended to the capture note — `Inbox.md` in the open folder by default — under a time heading. Nothing is written until you choose Append. The task list checkbox only rewrites lines that are not already list items. An already-open tab showing the capture note is left unchanged and may not show the capture; review the disk before relying on it.
+
+**Today's note (`Ctrl+Alt+D`).** Opens (or creates) today's note from the daily template, inside the folder configured under **Settings → Daily note folder** (default `Daily`, relative to the open folder). The default filename pattern is `yyyy-mm-dd`; `yyyy-mm`, `yyyy/MM/dd` (as nested folders) and `dd-MM-yyyy` are supported. The template is shared with **Notes → New note from template…** — open that dialog to review or edit it, and to see the placeholders it expands: `{{date}}`, `{{time}}`, `{{title}}`, `{{weekday}}` and `{{iso}}`.
+
+**Outline, tags and links.** `Ctrl+Alt+B` (or the Notes chip in the status bar, or **Notes → Notes, tags & backlinks**) toggles a rail with three views:
+
+- **Outline** — the headings of the active note; click one to jump. `Ctrl+Shift+O` opens the outline as a filterable palette.
+- **Tags** — every `#tag` and `tags:` front-matter entry, in this note or across the index.
+- **Links** — outgoing `[[wiki links]]` with broken and ambiguous states, backlinks (notes that link here), and orphan notes (indexed notes that nothing links to).
+
+**The local note index.** Cross-note views need an index, built on demand from **Notes → Index folder notes…**. It reads only folders you opened — up to 2,000 indexable notes of up to 512 KB each (`.md`, `.markdown`, `.mdown`, `.mkd`, `.mdx`, `.txt`, `.text`, `.kanban`) — stores nothing on disk, never leaves the machine, and refreshes after saves. Two notes with the same name are reported as ambiguous rather than guessed at. **Notes → Clear note index** discards it at any time; nothing on disk changes. The index is not a live filesystem watcher: files changed outside the app are picked up on the next rebuild.
+
+**Markdown editing commands.** In a Markdown note with a selection, `Ctrl+B`/`Ctrl+I`/`Ctrl+K` apply bold/italic/link (elsewhere `Ctrl+B` toggles the sidebar). `Ctrl+Shift+1`…`Ctrl+Shift+6` set the heading level, `Ctrl+Shift+Q` quotes, `Ctrl+Shift+U` creates a bullet list, `Ctrl+Shift+D` duplicates a line, `Ctrl+Shift+K` deletes it, and `Alt+↑`/`Alt+↓` move it. Inline code, strikethrough, numbered and task lists, quotes, a fenced code block, smart typography for the selection, sorting, joining and trailing-whitespace trim are searchable in the command palette (`Ctrl+Shift+P`).
+
+**Focus, typewriter and zen.** `F8` focus mode dims everything outside the sentence or paragraph around the caret, `F9` typewriter mode keeps the caret vertically centered, and `F11` zen mode hides the chrome. A chip in the status bar turns the active mode off in one click.
+
+**Writing comforts.** Optional smart typography (Settings; off by default) curls quotes and rewrites `--` and `...` as you type. It only ever rewrites a single typed character — never a paste, never an IME composition, never inside code. The Edit menu's **Smart quotes in selection** applies the same conversion to a selection. Settings also has the editor typeface (monospace, sans or serif), font size, a long-line ruler (80/100/120 columns), spell-check for the editor and the optional **minimap** — a click-to-jump map of the document that disables itself above 400,000 characters rather than stalling the editor.
+
 ## Arena and reviewed changes
 
 **Direct API path (desktop only):** Open **Arena** from the top bar or **Edit → Arena**, then choose **API key**. Enter your own eligible Arena API key and an enabled model ID. Choose **Ask a question** (no selection required) or **Propose an edit to selection** (select text in the editor first, then choose **Capture selection**). Inspect the question and captured text, then choose **Send to Arena** and confirm the cloud-consent dialog. The key is held only in memory and cleared when the panel closes; do not paste it into the editor or share it in support messages.
@@ -173,6 +198,15 @@ The app was previously named Morrow. Wrytrove reads old local settings (`morrow.
 | Next / previous tab | `Ctrl+Tab` / `Ctrl+Shift+Tab` |
 | Toggle sidebar / wrap | `Ctrl+B` / `Alt+Z` |
 | Settings | `Ctrl+,` |
+| Bold / italic / link (Markdown selection) | `Ctrl+B` / `Ctrl+I` / `Ctrl+K` |
+| Heading level 1–6 | `Ctrl+Shift+1` … `Ctrl+Shift+6` |
+| Quote / bullet list | `Ctrl+Shift+Q` / `Ctrl+Shift+U` |
+| Duplicate / delete line | `Ctrl+Shift+D` / `Ctrl+Shift+K` |
+| Move line up / down | `Alt+↑` / `Alt+↓` |
+| Quick capture / today's note | `Ctrl+Alt+N` / `Ctrl+Alt+D` |
+| Notes panel / outline palette | `Ctrl+Alt+B` / `Ctrl+Shift+O` |
+| Focus / typewriter / zen | `F8` / `F9` / `F11` |
+| Zoom in / out / reset | `Ctrl++` / `Ctrl+-` / `Ctrl+0` |
 | Request AI / accept / dismiss | `Ctrl+Shift+Space` / `Tab` / `Esc` |
 
 ## Development and tests

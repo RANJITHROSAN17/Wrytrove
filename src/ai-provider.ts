@@ -8,8 +8,11 @@ export interface AiProviderDescriptor {
   readonly route: AiRouteState;
   readonly warning: string;
 }
+/** Single source of truth for the local Ollama origin; loopback is not proof of local processing. */
+export const OLLAMA_API_BASE = 'http://127.0.0.1:11434';
+
 export const AI_PROVIDERS: Readonly<Record<AiProvider, AiProviderDescriptor>> = {
-  ollama: { id: 'ollama', endpoint: 'http://127.0.0.1:11434/api/generate', route: 'unknown', warning: 'Ollama may route requests to a cloud model; loopback does not prove local processing.' },
+  ollama: { id: 'ollama', endpoint: `${OLLAMA_API_BASE}/api/generate`, route: 'unknown', warning: 'Ollama may route requests to a cloud model; loopback does not prove local processing.' },
   arena: { id: 'arena', endpoint: 'https://api.arena.ai/v1/chat/completions', route: 'cloud', warning: 'Arena and its model providers may charge, retain or share data according to account terms.' },
 };
 const CAPABILITIES: Readonly<Record<AiProvider, readonly AiCapability[]>> = {

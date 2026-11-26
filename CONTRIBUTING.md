@@ -8,7 +8,7 @@ MSVC Build Tools or WebView2 to make a meaningful contribution.
 
 ```bash
 npm ci
-npm test          # the full vitest suite (48 files); no Windows needed
+npm test          # the vitest suite (53 files) plus the VAL-02 node fixture test; no Windows needed
 npm run build     # typecheck + bundle
 ```
 
@@ -20,7 +20,7 @@ That is the whole inner loop. Verified on Linux against the 0.4.0 tree.
 | Editing pure modules: `src/encoding.ts`, `src/markdown-render.ts`, `src/samples.ts` | **No** |
 | Browser UI work: `npm run dev`, `npm run test:e2e` | **No** (needs `npx playwright install --only-shell chromium`) |
 | `npm run tauri dev`, the installed app | **Yes** |
-| `cargo test --manifest-path src-tauri/Cargo.toml --lib` | **Yes** |
+| `cargo test --manifest-path src-tauri/Cargo.toml --lib` | **No** — needs the Tauri Linux/macOS system prerequisites; CI also runs it on Windows |
 | Native dialogs, file associations, Ollama over desktop IPC | **Yes** |
 
 If a task requires Windows, the issue says so in its first paragraph. If it does not say that,
@@ -45,7 +45,7 @@ or close and reopen the PR.
 | `src/markdown-render.ts` | Markdown to a bounded, inert preview tree |
 | `src/sensitive-text.ts` | the credential-shape warning. Fallible by design; see the README |
 | `src-tauri/` | the Rust shell. Small on purpose |
-| `scripts/` | repo tooling: the roadmap drift check, the static security audit, benchmarks |
+| `scripts/` | repo tooling: the roadmap drift check, the static security audit, benchmarks (typechecked by `npm run check:scripts`) |
 | `limits.json` | shared budgets. The 20 MiB editable-file limit is authored here, read by `src/encoding.ts`, and enforced by `src-tauri/src/lib.rs` |
 | `tests/*.test.ts` | vitest. Must pass on every OS |
 | `tests/e2e/*.spec.ts` | Playwright against the browser build |
