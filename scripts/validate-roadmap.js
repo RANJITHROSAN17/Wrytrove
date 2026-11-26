@@ -28,9 +28,12 @@ const REQUIRED_BODY_MARKERS = [
   ["## Time estimate", "time estimate"],
 ];
 
+/** @type {string[]} */
 const errors = [];
+/** @type {string[]} */
 const warnings = [];
 
+/** @param {string} msg */
 function fail(msg) {
   errors.push(msg);
 }
@@ -73,7 +76,7 @@ for (const [i, item] of doc.items.entries()) {
   if (Array.isArray(item.labels) && item.labels.length === 0) {
     fail(`${at}: labels is empty; needs at least one of ${REQUIRED_LABELS.join(" / ")}`);
   }
-  if (Array.isArray(item.labels) && !item.labels.some((l) => REQUIRED_LABELS.includes(l))) {
+  if (Array.isArray(item.labels) && !item.labels.some((/** @type {string} */ l) => REQUIRED_LABELS.includes(l))) {
     warnings.push(`${at}: no contributor-facing label (${REQUIRED_LABELS.join(" / ")}); the bot will still file it`);
   }
 

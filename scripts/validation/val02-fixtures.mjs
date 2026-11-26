@@ -5,12 +5,15 @@ import { mkdir, open, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+/** @param {string} root */
 export async function createFixtures(root) {
   // mkdir without recursive deliberately fails if the destination already exists.
   await mkdir(root);
   await mkdir(join(root, 'workspace'));
   await mkdir(join(root, 'outside'));
+  /** @type {{ path: string, size: number, sha256: string }[]} */
   const records = [];
+  /** @param {string} name @param {Iterable<Buffer>} chunks */
   async function fixture(name, chunks) {
     const file = await open(join(root, name), 'wx');
     const hash = createHash('sha256');
@@ -25,6 +28,7 @@ export async function createFixtures(root) {
     } finally { await file.close(); }
     records.push({ path: name.replaceAll('\\', '/'), size, sha256: hash.digest('hex') });
   }
+  /** @param {string} s */
   const bytes = (s) => Buffer.from(s, 'utf8');
   const text = 'alpha\r\nbeta\r\n';
   const le = Buffer.from(text, 'utf16le');
@@ -38,6 +42,7 @@ export async function createFixtures(root) {
   await fixture('workspace/target.txt', [bytes('original synthetic content\n')]);
   await fixture('outside/canary.txt', [bytes('outside synthetic canary\n')]);
   const block = Buffer.alloc(1024 * 1024, 0x61);
+  /** @param {number} size @returns {Generator<Buffer>} */
   function* large(size) {
     while (size > 0) {
       const count = Math.min(size, block.length);
@@ -45,7 +50,7 @@ export async function createFixtures(root) {
       size -= count;
     }
   }
-  for (const [name, size] of [['20mib.txt', 20 * 1024 * 1024], ['20mib-plus-one.txt', 20 * 1024 * 1024 + 1], ['100mib.txt', 100 * 1024 * 1024]]) {
+  for (const [name, size] of /** @type {[string, number][]} */ ([['20mib.txt', 20 * 1024 * 1024], ['20mib-plus-one.txt', 20 * 1024 * 1024 + 1], ['100mib.txt', 100 * 1024 * 1024]])) {
     await fixture(`workspace/${name}`, large(size));
   }
   const manifest = { version: 1, algorithm: 'sha256', files: records };

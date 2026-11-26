@@ -18,6 +18,7 @@ export const SIZES = [
   { label: '20MiB', bytes: 20 << 20 },
 ];
 
+/** @param {number} seed */
 function lcg(seed) {
   let s = seed >>> 0;
   return () => {
@@ -27,6 +28,7 @@ function lcg(seed) {
 }
 
 // Returns a string whose UTF-8 encoding is at least `bytes` bytes (may overshoot by one line).
+/** @param {number} bytes @param {number} [seed] */
 export function makeFixture(bytes, seed = 1) {
   const rand = lcg(seed);
   const parts = [];
@@ -45,6 +47,7 @@ export function makeFixture(bytes, seed = 1) {
   return parts.join('');
 }
 
+/** @param {string} text */
 export function sha256(text) {
   return createHash('sha256').update(text, 'utf8').digest('hex');
 }

@@ -33,6 +33,7 @@ const rows = [
   ['Review diff, 5,000 lines', 'compute bounded 5,000-line review diff', 'reference unbounded 5,000-line review diff (diffLines)'],
 ];
 
+/** @param {number} value @param {number} [digits] */
 const fmt = (value, digits = 2) => value.toFixed(digits);
 const missing = [];
 const lines = [
