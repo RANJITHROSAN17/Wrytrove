@@ -149,6 +149,7 @@ export function renderStatusMarkdown(roadmap, issues = [], repoRoot = ROOT) {
   return lines.join("\n") + "\n";
 }
 
+/** @type {[string, RegExp][]} */
 const AREA_RULES = [
   ["area/ai", /\b(ollama|completion|fim|inline suggestion|ai\.ts|arena|model)\b/i],
   ["area/workspace", /\b(workspace|quick open|search|folder|directory|ctrl\+p)\b/i],

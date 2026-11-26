@@ -7,7 +7,7 @@ import { search, highlightSelectionMatches } from '@codemirror/search';
 import { languages } from '@codemirror/language-data';
 import { tags } from '@lezer/highlight';
 import type { Settings } from './storage';
-import { focusRange, typewriterPadding, type FocusSettings } from './focus-mode';
+import { focusRange, type FocusSettings } from './focus-mode';
 import { smartCharacter } from './markdown-format';
 
 export const languageCompartment = new Compartment();
@@ -204,10 +204,3 @@ export function applyEditorExtensions(view: EditorView, settings: Settings): voi
     focusEffect.of(settings.focus),
   ] });
 }
-
-/** Height, in CSS pixels, that typewriter mode would add for this viewport. */
-export function typewriterSpace(view: EditorView, enabled: boolean): number {
-  return typewriterPadding(view.scrollDOM.clientHeight, view.defaultLineHeight, enabled);
-}
-
-export { typewriterPadding };

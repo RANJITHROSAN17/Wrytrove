@@ -33,14 +33,14 @@ export const DEFAULT_CAPTURE_SNIPPET = [
 ].join('\n');
 
 export interface DailyOptions {
-  /** `yyyy-mm-dd` (default), `yyyy-MM`, `yyyy/MM/dd`, `dd-MM-yyyy`. */
+  /** `yyyy-mm-dd` (default), `yyyy-mm`, `yyyy/MM/dd`, `dd-MM-yyyy`. */
   format: DailyFormat;
   template: string;
   /** Folder-relative path, e.g. `Daily` or empty for the root. */
   folder: string;
 }
 
-export type DailyFormat = 'yyyy-mm-dd' | 'yyyy-mm' | 'yyyy/MM/dd' | 'dd-MM-yyyy' | 'yyyy-MM-dd';
+export type DailyFormat = 'yyyy-mm-dd' | 'yyyy-mm' | 'yyyy/MM/dd' | 'dd-MM-yyyy';
 
 export const DAILY_FORMATS: { id: DailyFormat; label: string; example: (date: Date) => string }[] = [
   { id: 'yyyy-mm-dd', label: '2026-11-13', example: (d) => isoDate(d) },

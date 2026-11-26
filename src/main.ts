@@ -51,6 +51,17 @@ const el = <T extends keyof HTMLElementTagNameMap>(tag: T, className = ''): HTML
 };
 const uuid = () => crypto.randomUUID();
 /**
+ * Replace a node's children with the parsed SVG for a static icon name. Icon markup is a trusted
+ * constant from `icons.ts`; parsing it as an inert SVG document avoids `innerHTML` entirely, so the
+ * static audit can ban HTML string insertion across the whole frontend.
+ */
+const setIcon = (node: HTMLElement, name: string, size?: number): void => {
+  const parsed = new DOMParser().parseFromString(icon(name, size), 'image/svg+xml');
+  const svg = parsed.documentElement;
+  if (!svg || svg.nodeName.toLowerCase() !== 'svg') throw new Error('Unable to render the window icon.');
+  node.replaceChildren(document.importNode(svg, true));
+};
+/**
  * Identifies the exact text and file format a draft holds, so unchanged tabs are not rewritten.
  * The caret is deliberately not part of the key: it changes on every click and is stored by a
  * small manifest-only update instead of re-sending the document. See `writeJournal`.
@@ -188,7 +199,7 @@ class WrytroveApp {
   private get active(): Doc { return this.docs.find((doc) => doc.id === this.activeId) || this.docs[0]; }
 
   async start(): Promise<void> {
-    document.querySelectorAll<HTMLElement>('[data-icon]').forEach((node) => { node.innerHTML = icon(node.dataset.icon || 'info'); });
+    document.querySelectorAll<HTMLElement>('[data-icon]').forEach((node) => { setIcon(node, node.dataset.icon || 'info'); });
     this.populateLanguages();
     this.applySettings();
     let restored = false;
@@ -917,7 +928,7 @@ class WrytroveApp {
       tab.append(this.fileBadge(doc.name));
       const tabName = el('span', 'tab-name'); tabName.textContent = displayName; tab.append(tabName);
       if (dirty) { const dot = el('span', 'dirty-dot'); dot.title = 'Unsaved changes'; tab.append(dot); }
-      const close = el('button', 'tab-close'); close.type = 'button'; close.innerHTML = icon('close', 13); close.setAttribute('aria-label', `Close ${doc.name}`); close.title = `Close ${doc.name}`;
+      const close = el('button', 'tab-close'); close.type = 'button'; setIcon(close, 'close', 13); close.setAttribute('aria-label', `Close ${doc.name}`); close.title = `Close ${doc.name}`;
       close.addEventListener('click', (event) => { event.stopPropagation(); void this.closeDoc(doc.id); });
       tab.append(close); tab.addEventListener('click', () => this.switchDoc(doc.id));
       tab.addEventListener('keydown', (event) => {
@@ -1731,7 +1742,7 @@ class WrytroveApp {
       : this.recoveryCleanupFailed && !this.settings.recovery ? 'Recovery off — old copy not removed'
       : this.recoveryFailed && this.settings.recovery ? 'Recovery unavailable — save your work'
       : this.settings.recovery ? 'Local session recovery on' : 'Session recovery off';
-    status.innerHTML = '<span class="status-dot"></span> <span></span>';
+    status.replaceChildren(el('span', 'status-dot'), document.createTextNode(' '), el('span'));
     status.lastElementChild!.textContent = label;
     status.title = this.settings.recovery ? 'Recovery copies are stored locally, unencrypted. They are not backups.' : 'Save important work to files. Recovery copies are not backups.';
   }
@@ -2004,9 +2015,13 @@ class WrytroveApp {
       case 'about': await this.confirm('A little space for big ideas.', `Wrytrove 0.4.0 is an open-source text and code editor. Your files stay yours. This is an early preview; save important work regularly.`, [{ id: 'ok', label: 'Sounds good', style: 'primary' }], 'ABOUT WRYTROVE'); break;
       case 'bold': case 'italic': case 'code': case 'strike': case 'link': case 'quote': case 'bullets': case 'numbers': case 'tasks': case 'code-block': case 'smart-typography': case 'heading':
         this.runFormat(action); break;
-      case 'line-duplicate': this.runFormat('line-duplicate'); break;
-      case 'line-delete': this.runFormat('line-delete'); break;
-      case 'line-sort': this.runFormat('line-sort'); break;
+      case 'line-duplicate':
+      case 'line-delete':
+      case 'line-sort':
+      case 'line-sort-desc':
+      case 'line-trim-trailing':
+      case 'line-join':
+        this.runFormat(action); break;
       case 'quick-capture': this.openCapture(); break;
       case 'daily-note': this.openDailyNote(); break;
       case 'new-template': this.openTemplateDialog('template'); break;
@@ -2074,7 +2089,7 @@ class WrytroveApp {
     const label = message || (!desktop ? 'Desktop app only in this preview' : this.settings.aiEnabled ? 'On · using Ollama' : 'Off · enable for this session');
     status.classList.toggle('on', this.settings.aiEnabled && !error);
     status.classList.toggle('error', error);
-    status.innerHTML = '<span class="status-dot"></span><span></span>';
+    status.replaceChildren(el('span', 'status-dot'), el('span'));
     status.lastElementChild!.textContent = label;
     $('#ai-toggle').setAttribute('aria-checked', String(this.settings.aiEnabled));
     const top = $('#ai-top-state'); top.textContent = this.settings.aiEnabled ? 'ON' : 'OFF'; top.classList.toggle('on', this.settings.aiEnabled);

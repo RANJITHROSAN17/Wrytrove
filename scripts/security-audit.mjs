@@ -72,6 +72,7 @@ for (const relative of sourcePaths) {
     ['dynamic code evaluation', /\beval\s*\(/u],
     ['Function constructor', /\bnew\s+Function\s*\(/u],
     ['document.write', /\bdocument\.write\s*\(/u],
+    ['innerHTML assignment', /\.innerHTML\s*=/u],
     ['HTML string insertion', /\binsertAdjacentHTML\s*\(/u],
     ['outerHTML replacement', /\bouterHTML\s*=/u],
     ['React raw HTML escape hatch', /dangerouslySetInnerHTML/u],
@@ -108,6 +109,6 @@ if (failures.length) {
   for (const failure of failures) console.error(`- ${failure}`);
   process.exitCode = 1;
 } else {
-  console.log('Static security audit passed: CSP, capability scope, forbidden dynamic HTML/code patterns, Markdown DOM boundary, and HTTP import boundaries.');
+  console.log('Static security audit passed: CSP, capability scope, forbidden dynamic HTML/code patterns (including innerHTML), Markdown DOM boundary, and HTTP import boundaries.');
 }
 for (const warning of warnings) console.log(`Warning: ${warning}`);

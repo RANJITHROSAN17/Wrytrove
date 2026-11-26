@@ -1,11 +1,10 @@
 import { fetch as nativeFetch } from '@tauri-apps/plugin-http';
 import { desktop } from './platform';
 import { boundedJson } from './bounded-json';
-import { AI_PROVIDERS } from './ai-provider';
+import { AI_PROVIDERS, OLLAMA_API_BASE } from './ai-provider';
 import { buildActionRequest, cleanActionOutput, getAiAction, type AiActionId } from './ai-actions';
 
 export const DEFAULT_MODEL = 'qwen2.5-coder:1.5b';
-const ENDPOINT = 'http://127.0.0.1:11434';
 export const AI_CONTEXT_BEFORE = 3500;
 export const AI_CONTEXT_AFTER = 1200;
 export const MAX_OLLAMA_RESPONSE_BYTES = 262_144;
@@ -48,7 +47,7 @@ export function firstSuggestion(value: unknown): string {
 
 export async function listModels(signal?: AbortSignal): Promise<string[]> {
   if (!desktop) throw new Error('AI is available in the Windows desktop app, not this browser preview.');
-  const response = await nativeFetch(`${ENDPOINT}/api/tags`, { method: 'GET', signal, maxRedirections: 0 });
+  const response = await nativeFetch(`${OLLAMA_API_BASE}/api/tags`, { method: 'GET', signal, maxRedirections: 0 });
   if (!response.ok) { await response.body?.cancel().catch(() => {}); throw new Error(`Ollama responded with HTTP ${response.status}.`); }
   const body = await boundedJson(response, MAX_OLLAMA_RESPONSE_BYTES, 'Ollama response is too large.') as { models?: unknown };
   if (!Array.isArray(body?.models)) return [];

@@ -25,7 +25,7 @@
 
 - Add a **Notes rail** with three views: an **outline** of the current note, **tags** from `#tag` and front matter (for this note and across the index), and **links** — outbound `[[wiki links]]` with broken/ambiguous states, **backlinks**, and orphan notes.
 - Add an on-demand, **local-only note index** with tag counts, backlink resolution and ambiguity reporting (two notes named `Plan` link to neither, rather than guessing). It reads only folders you opened, can be cleared from the menu, and is never uploaded.
-- Add **quick capture** (`Ctrl+Alt+N`) that appends a timestamped block to `Inbox.md` (or a configured note), optionally as a task list; **daily notes** (`Ctrl+Alt+D`) from an expandable template with `yyyy-mm-dd`, `dd-mm-yyyy`, `yyyy/mm/dd`, `yyyy-mm-dd-dddd` and ISO-week formats; and **new note from template**.
+- Add **quick capture** (`Ctrl+Alt+N`) that appends a timestamped block to `Inbox.md` (or a configured note), optionally as a task list; **daily notes** (`Ctrl+Alt+D`) from an expandable template with `yyyy-mm-dd`, `yyyy-mm`, `yyyy/mm/dd` and `dd-MM-yyyy` formats; and **new note from template**.
 - Add a **note actions** set: tab outline palette (`Ctrl+Shift+O`), notes panel toggle (`Ctrl+Alt+B`), index build/clear.
 
 ### Tests and docs
