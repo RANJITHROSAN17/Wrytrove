@@ -9,7 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 // workflow text mentions it.
 const root = resolve(import.meta.dirname, '..');
 const helper = resolve(root, 'scripts/release.mjs');
-const TAG = 'v0.4.0';
+const TAG = `v${(JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')) as { version: string }).version}`;
 const COMMIT = 'a'.repeat(40);
 const INSTALLER = 'Wrytrove_0.4.0_x64-setup.exe';
 

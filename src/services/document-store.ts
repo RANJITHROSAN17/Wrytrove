@@ -72,4 +72,12 @@ export class DocumentStore {
     this.emit(updated);
     return updated;
   }
+
+  close(id: string): boolean {
+    return this.docs.delete(id);
+  }
+
+  list(): readonly ManagedDocument[] {
+    return Array.from(this.docs.values());
+  }
 }

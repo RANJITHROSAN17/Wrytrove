@@ -36,4 +36,14 @@ describe('DocumentStore service', () => {
     });
     expect(store.canSave('missing', 1, null)).toEqual({ allowed: false, reason: 'not-found' });
   });
+
+  it('lists and closes managed documents cleanly', () => {
+    const store = new DocumentStore();
+    store.open({ id: 'd1', path: 'a.md', content: 'a', baseHash: 'h1' });
+    store.open({ id: 'd2', path: 'b.md', content: 'b', baseHash: 'h2' });
+    expect(store.list()).toHaveLength(2);
+    expect(store.close('d1')).toBe(true);
+    expect(store.close('d1')).toBe(false);
+    expect(store.list().map((d) => d.id)).toEqual(['d2']);
+  });
 });

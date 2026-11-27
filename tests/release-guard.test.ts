@@ -18,10 +18,11 @@ function runRelease(...args: string[]) {
 
 describe('tagged release guard', () => {
   it('accepts the checked-in source version and rejects a different tag', () => {
-    expect(execFileSync(process.execPath, [resolve(root, 'scripts/release.mjs'), 'verify-tag', 'v0.4.0'], {
+    const pkgVersion = (JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')) as { version: string }).version;
+    expect(execFileSync(process.execPath, [resolve(root, 'scripts/release.mjs'), 'verify-tag', `v${pkgVersion}`], {
       cwd: root,
       encoding: 'utf8',
-    })).toContain('matches Wrytrove 0.4.0');
+    })).toContain(`matches Wrytrove ${pkgVersion}`);
 
     const invalid = runRelease('verify-tag', 'v0.4.1');
     expect(invalid.status).not.toBe(0);
