@@ -86,22 +86,22 @@ Measured large-file streaming & cancellation (`node scripts/benchmark-large-file
 
 ## Quick Start
 
-### Windows Installer (Preview)
+### Windows Installer (Preview `.exe`)
 
-Download the latest Windows x64 installer from [**GitHub Releases**](https://github.com/RANJITHROSAN17/Wrytrove/releases).
+Download the **`v0.5.0` Windows x64 `.exe` installer** directly from [**GitHub Releases (`v0.5.0`)**](https://github.com/RANJITHROSAN17/Wrytrove/releases/tag/v0.5.0) (or browse all [**Releases**](https://github.com/RANJITHROSAN17/Wrytrove/releases)).
 
 > **Signing notice:** Preview builds without a configured publisher certificate are labeled **`unsigned-preview`**. Windows SmartScreen may show an unknown-publisher warning. Every release includes `SHA256SUMS.txt`, CycloneDX/Cargo SBOMs, and GitHub SLSA provenance attestations—see the [release verification and rollback guide](docs/RELEASE-VERIFICATION.md).
 
-### Local Development & Verification
+### Test in Your Browser (No Windows Required)
 
-Requires **Node.js 22** (see `.nvmrc`):
+Contributors on **Linux, macOS, or Windows** can test the editor UI and run the full test suite without installing Rust or Tauri:
 
 ```sh
 git clone https://github.com/RANJITHROSAN17/Wrytrove.git
 cd Wrytrove
 npm ci
 ./run.sh        # Runs unit/fixture tests, tsc + vite build, static security audit, and roadmap check
-./run.sh dev    # Starts the Vite dev server on http://0.0.0.0:5173
+./run.sh dev    # Starts the browser preview on http://localhost:5173
 ```
 
 ---
