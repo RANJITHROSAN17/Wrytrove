@@ -10,6 +10,8 @@ import { ExternalChangeError, writeTo, type NativeSaveMetadata, type OpenedFile 
 import { scanNoteRoots, type NoteScan } from './note-index-scan';
 import { MAX_WORKSPACE_ROOTS, createWorkspaceEntry, listWorkspaceDirectory, readWorkspaceFile, pickWorkspace, rankWorkspaceFiles, searchWorkspace, walkWorkspace, type DirectoryListing, type NewWorkspaceEntryKind, type SearchResult, type WalkProgress, type WorkspaceDirectory, type WorkspaceFile } from './workspace';
 
+import type { WorkbenchCommand } from './services/types';
+
 type IterableDirectory = FileSystemDirectoryHandle & { values(): AsyncIterableIterator<FileSystemHandle> };
 const $ = <T extends HTMLElement = HTMLElement>(selector: string): T => {
   const value = document.querySelector<T>(selector);
@@ -25,6 +27,7 @@ export interface WorkbenchHost {
   toast(message: string): void;
   confirm(title: string, message: string, buttons: ConfirmButton[], eyebrow?: string): Promise<string>;
   action(name: string): Promise<void>;
+  dispatchCommand?(command: WorkbenchCommand): Promise<void>;
   captureSelection(): ReviewTarget;
   targetIsCurrent(target: ReviewTarget): boolean;
   applyReview(target: ReviewTarget, replacement: string): void;
