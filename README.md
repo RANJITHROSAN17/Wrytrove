@@ -169,22 +169,23 @@ npm run benchmark:table
 
 [**docs/BENCHMARK-COMPARISON.md**](docs/BENCHMARK-COMPARISON.md) compares Wrytrove's editor engine (CodeMirror 6) with Monaco and Ace on identical synthetic files, as percentages. Run `npm --prefix benchmarks/engines ci` once, then `npm run benchmark:engines` and `npm run benchmark:compare`.
 
-Measured large-file streaming & cancellation (`node scripts/benchmark-large-file.mjs`, Node 22.22.3, Linux x64):
+<!-- BENCHMARK_RESULTS:START -->
+Measured large-file streaming & cancellation (`node scripts/benchmark-large-file.mjs`, Node v22.22.3, linux x64):
 
 | File Size | First Window | Streaming Search | Worker Cancel | Peak RSS |
 | --- | ---: | ---: | ---: | ---: |
-| 100 MiB | 1.17 ms | 756.12 ms | 1.44 ms | 142,924 KiB |
-| 500 MiB | 1.20 ms | 3,636.65 ms | 1.29 ms | 144,020 KiB |
+| 100 MiB | 1.32 ms | 843.20 ms | 1.30 ms | 139,164 KiB |
+| 500 MiB | 1.21 ms | 4087.74 ms | 1.29 ms | 144,124 KiB |
+<!-- BENCHMARK_RESULTS:END -->
 
-Where Wrytrove's architecture stands out compared to similar editors:
+Where Wrytrove's architecture stands out compared to similar editors (acknowledging each tool's strongest technical design):
 
-| Capability | Wrytrove | VS Code / Zed | Notepad++ | MarkText / Joplin |
-| --- | --- | --- | --- | --- |
-| **Zero-telemetry local-first Markdown** | Yes (plain `.md` files, no account) | Optional / extensions | Yes (plain files) | Joplin uses SQLite |
-| **Capability-gated AI & egress preview** | Yes (`ai-provider.ts`, pre-send byte/hash preview, verifiable citations) | Extension-dependent | No built-in AI | No |
-| **Crash-safe draft journal & 3-way review** | Yes (`recovery-journal.ts`, disk vs snapshot vs draft) | Working-copy backup | Session snapshot | Auto-save |
-| **Reviewable note move & link repair** | Yes (`note-transaction.ts`, hash-checked) | Extension-dependent | No | Partial |
-| **Untrusted-workspace subprocess lock** | Yes (`tool-broker.ts`, default untrusted) | Workspace Trust | N/A | N/A |
+| Product | Their Best Technical Strengths | Where Wrytrove Stands Out |
+| --- | --- | --- |
+| **Wrytrove** | Tauri 2 + CodeMirror 6 + Rust native FS | Capability-gated AI with verifiable citations, crash-safe draft journal, hash-checked note move transactions, untrusted-workspace tool broker |
+| **VS Code / Zed** | Mature LSP/extension ecosystems; Zed's GPU-rendered Rust UI | Zero-telemetry local-first Markdown without account/extension-marketplace supply-chain exposure |
+| **Notepad++** | Ultra-fast native Win32/Scintilla startup & large-file handling | Built-in Markdown preview, wikilink/backlink index, 3-way recovery review, and capability-gated AI |
+| **MarkText / Joplin** | Rich WYSIWYG Markdown (MarkText); E2EE sync & plugins (Joplin) | Plain-file portability (no SQLite lock-in), pre-send AI byte/hash preview, and signed/attested release provenance |
 
 Comparison with the desktop apps (Notepad++, Notepads, VS Code, Zed) has to run on Windows with those apps installed. Use `npm run benchmark:products` after copying `benchmarks/product/products.example.json`. That harness is written but has not yet been run on Windows. Until those results are published, Wrytrove makes no speed or memory advantage claim against any product. Startup, memory and typing-latency claims stay under [issue #65](https://github.com/RANJITHROSAN17/Wrytrove/issues/65).
 
