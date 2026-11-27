@@ -1,6 +1,6 @@
 /** Shared privacy metadata. These descriptors describe Wrytrove's first hop, not downstream routing. */
 export type AiProvider = 'ollama' | 'arena';
-export type AiCapability = 'inline-completion' | 'selection-edit' | 'selection-answer' | 'arena-edit' | 'arena-ask';
+export type AiCapability = 'inline-completion' | 'selection-edit' | 'selection-answer' | 'arena-edit' | 'arena-ask' | 'ask-document';
 export type AiRouteState = 'unknown' | 'cloud';
 export interface AiProviderDescriptor {
   readonly id: AiProvider;
@@ -16,8 +16,8 @@ export const AI_PROVIDERS: Readonly<Record<AiProvider, AiProviderDescriptor>> = 
   arena: { id: 'arena', endpoint: 'https://api.arena.ai/v1/chat/completions', route: 'cloud', warning: 'Arena and its model providers may charge, retain or share data according to account terms.' },
 };
 const CAPABILITIES: Readonly<Record<AiProvider, readonly AiCapability[]>> = {
-  ollama: ['inline-completion', 'selection-edit', 'selection-answer'],
-  arena: ['arena-edit', 'arena-ask'],
+  ollama: ['inline-completion', 'selection-edit', 'selection-answer', 'ask-document'],
+  arena: ['arena-edit', 'arena-ask', 'ask-document'],
 };
 
 export interface AiPayloadPreview {
