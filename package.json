@@ -42,6 +42,7 @@
     "@codemirror/state": "^6.5.0",
     "@codemirror/view": "^6.40.0",
     "@lezer/highlight": "^1.2.1",
+    "@mlc-ai/web-llm": "^0.2.89",
     "@tauri-apps/api": "^2.12.5",
     "@tauri-apps/plugin-dialog": "^2.4.0",
     "@tauri-apps/plugin-fs": "^2.4.0",
