@@ -97,8 +97,8 @@ svg { flex: none; vertical-align: middle; }
 .command-shortcut span:nth-child(2) { flex: 1; white-space: nowrap; }
 .command-shortcut kbd { padding: 2px 5px; border: 1px solid var(--line); border-radius: 4px; color: var(--dim); font-size: 10px; white-space: nowrap; }
 .top-actions { margin-left: 12px; display: flex; align-items: center; gap: 7px; }
-.icon-button { display: inline-grid; place-items: center; width: 33px; height: 33px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); flex: none; }
-.icon-button:hover, .icon-button[aria-pressed="true"] { color: var(--text); background: var(--hover); }
+.icon-button { display: inline-grid; place-items: center; width: 33px; height: 33px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--text); opacity: 0.78; flex: none; cursor: pointer; }
+.icon-button:hover, .icon-button[aria-pressed="true"] { opacity: 1; color: var(--text); background: var(--hover); }
 .icon-button.small { width: 29px; height: 29px; }
 .icon-button.tiny { width: 26px; height: 26px; }
 .top-separator { width: 1px; height: 22px; margin: 0 6px; background: var(--line); }
@@ -128,11 +128,11 @@ svg { flex: none; vertical-align: middle; }
 .sidebar-section-label .tiny { margin-left: auto; }
 .file-count { font-size: 9px; color: var(--muted); letter-spacing: 0; padding: 2px 5px; background: var(--raised); border-radius: 4px; }
 .file-list { overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
-.file-list-item { position: relative; display: flex; align-items: center; width: 100%; min-height: 38px; padding: 0 8px; border-radius: 6px; border: 1px solid transparent; background: transparent; color: var(--muted); text-align: left; }
+.file-list-item { position: relative; display: flex; align-items: center; width: 100%; min-height: 28px; padding: 2px 8px; border-radius: 6px; border: 1px solid transparent; background: transparent; color: var(--muted); text-align: left; font-size: 12px; }
 .file-list-item:hover { background: var(--raised); color: var(--text); }
 .file-list-item.active { background: var(--selected); color: var(--text); }
 .file-list-item.active::before { content: ''; position: absolute; width: 2px; left: -1px; top: 8px; bottom: 8px; border-radius: 2px; background: var(--accent-strong); }
-.file-icon { width: 23px; height: 25px; border-radius: 5px; display: inline-grid; place-items: center; flex: none; font-size: 9px; font-weight: 750; letter-spacing: -.3px; color: #bfe0c9; background: #364b40; margin-right: 9px; }
+.file-icon { width: 19px; height: 20px; border-radius: 4px; display: inline-grid; place-items: center; flex: none; font-size: 8px; font-weight: 750; letter-spacing: -.3px; color: #bfe0c9; background: #364b40; margin-right: 7px; }
 .file-icon.js { color: #e7d89f; background: #514e36; }
 .file-icon.md { color: #afcce6; background: #35495a; }
 .file-icon.data { color: #d3bce9; background: #4b4057; }
