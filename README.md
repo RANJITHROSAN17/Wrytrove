@@ -64,12 +64,12 @@ flowchart LR
 ## Benchmarks
 
 <!-- BENCHMARK_RESULTS:START -->
-Measured large-file streaming & cancellation (`node scripts/benchmark-large-file.mjs`, Node v22.22.3, linux x64):
+Measured large-file streaming & cancellation (`node scripts/benchmark-large-file.mjs`, Node v22.23.5, linux x64):
 
 | File Size | First Window | Streaming Search | Worker Cancel | Peak RSS |
 | --- | ---: | ---: | ---: | ---: |
-| 100 MiB | 1.17 ms | 756.12 ms | 1.44 ms | 142,924 KiB |
-| 500 MiB | 1.20 ms | 3,636.65 ms | 1.29 ms | 144,020 KiB |
+| 100 MiB | 1.04 ms | 595.66 ms | 1.92 ms | 142,584 KiB |
+| 500 MiB | 1.02 ms | 2693.89 ms | 1.87 ms | 150,164 KiB |
 <!-- BENCHMARK_RESULTS:END -->
 
 > **Note:** These are synthetic Linux baseline measurements. Windows WebView2 startup, memory, and typing-latency benchmarks are defined in [`docs/VAL01-BENCHMARK-PROTOCOL.md`](docs/VAL01-BENCHMARK-PROTOCOL.md).
