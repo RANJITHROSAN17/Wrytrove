@@ -227,3 +227,34 @@ test('startup prevents actions until asynchronous recovery has initialized the e
   await page.getByRole('button', { name: /Open a file/ }).click();
   await expect.poll(() => page.evaluate(() => (window as Window & { __opened?: boolean }).__opened)).toBe(true);
 });
+
+test('a long file name ellipsizes instead of pushing the tab close button out of view', async ({ page }) => {
+  await fresh(page);
+  // Long names are the case that broke the tab strip: `.tab-name` used to keep its full
+  // min-content width, so the 21px close button was laid out past the tab's 235px cap and
+  // never appeared. Short fixtures never reproduced it.
+  const longName = 'quarterly-roadmap-and-planning-notes.md';
+  const chooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: /Open a file/ }).click();
+  await (await chooser).setFiles({ name: longName, mimeType: 'text/markdown', buffer: Buffer.from('# notes') });
+  await expect(page.locator('#breadcrumb-file')).toHaveText(longName);
+  const close = page.getByRole('button', { name: `Close ${longName}` });
+  const tab = page.locator('.tab').filter({ has: close });
+  await expect(tab).toHaveCount(1);
+  await expect(close).toBeVisible();
+  await expect(close.locator('svg')).toBeVisible();
+  const tabBox = (await tab.boundingBox())!;
+  const closeBox = (await close.boundingBox())!;
+  const svgBox = (await close.locator('svg').boundingBox())!;
+  expect(closeBox.width, 'close button keeps its own width').toBeGreaterThanOrEqual(18);
+  expect(svgBox.width, 'the X glyph is actually painted').toBeGreaterThan(6);
+  expect(svgBox.height).toBeGreaterThan(6);
+  // The button must sit inside the tab it belongs to, on either side of the tab's right edge.
+  expect(closeBox.x).toBeGreaterThanOrEqual(tabBox.x - 1);
+  expect(closeBox.x + closeBox.width).toBeLessThanOrEqual(tabBox.x + tabBox.width + 1);
+  // The name is the part that gives way.
+  expect(await tab.locator('.tab-name').evaluate((node) => node.scrollWidth > node.clientWidth)).toBe(true);
+  // And it still closes the tab.
+  await close.click();
+  await expect(page.locator('#breadcrumb-file')).not.toHaveText(longName);
+});
