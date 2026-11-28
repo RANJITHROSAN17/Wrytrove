@@ -244,7 +244,8 @@ fn atomic_write_with_operations(
         .map_err(|err| SaveFailure::new(SavePhase::CreateTemp, format!("Cannot create a temporary file beside the destination: {err}")))?;
     temporary.write_all(data).map_err(|err| SaveFailure::new(SavePhase::WriteTemp, format!("Cannot write file: {err}")))?;
     flush(temporary.as_file()).map_err(|err| SaveFailure::new(SavePhase::FlushTemp, format!("Cannot flush file to disk: {err}")))?;
-    let permissions = if let Some(meta) = metadata {
+    // Borrowed, not moved: the same metadata is compared again after the commit.
+    let permissions = if let Some(meta) = &metadata {
         temporary.as_file().set_permissions(meta.permissions()).map_err(|err| SaveFailure::new(SavePhase::PreservePermissions, format!("Cannot set temporary file permissions: {err}")))?;
         PermissionAction::CopiedToTemp
     } else { PermissionAction::NotApplied };
