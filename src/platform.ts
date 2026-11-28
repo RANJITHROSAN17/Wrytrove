@@ -17,17 +17,35 @@ export interface OpenFailure { name: string; message: string; }
 export interface OpenFilesResult { files: OpenedFile[]; failures: OpenFailure[]; }
 /** Operations reported for the staged file; none guarantee final metadata preservation. */
 export type NativePermissionAction = 'copied_to_temp' | 'not_applied' | 'unknown';
-export interface NativeSaveMetadata { permissions: NativePermissionAction; }
+/**
+ * What the save could actually check about the file it left behind, compared with the file it
+ * replaced. `preserved` and `not_applicable` mean there is nothing to tell the user; only a
+ * detected difference or a failed inspection is worth a notice. None of this is a durability claim.
+ */
+export type NativeMetadataPreservation = 'preserved' | 'changed' | 'not_applicable' | 'not_verified' | 'unknown';
+export interface NativeSaveMetadata { permissions: NativePermissionAction; preservation?: NativeMetadataPreservation; }
 export interface WriteOutcome { digest: string; nativeMetadata?: NativeSaveMetadata; }
 
-/** Honest user-facing description of what the save reported, not a metadata guarantee. */
+/**
+ * Honest user-facing description of what the save reported, not a metadata guarantee. An empty
+ * string means the save found nothing the user needs to act on, and the caller shows no notice.
+ *
+ * Only a *detected* problem is reported. The staged `permissions` operation is deliberately not
+ * described here: `not_applied` means the destination did not exist yet, so there was never any
+ * permission to carry over, and `copied_to_temp` only says what was done to the temporary file.
+ * Neither is a statement about the file the user ends up with, and repeating them on every save
+ * is what made the old notice worthless.
+ */
 export function describeNativeSaveMetadata(metadata: NativeSaveMetadata): string {
-  const permissions = metadata.permissions === 'copied_to_temp'
-    ? 'A basic permissions value was applied to the temporary file; final permissions were not verified.'
-    : metadata.permissions === 'not_applied'
-      ? 'No existing permissions value was applied to the temporary file.'
-      : 'Whether a permissions value was applied to the temporary file is unknown.';
-  return `${permissions} ACLs and other metadata were not verified and may change.`;
+  switch (metadata.preservation) {
+    case 'changed':
+      return 'The saved file’s attributes differ from the original, so some file metadata was not carried over.';
+    case 'not_verified':
+      return 'The saved file could not be checked after writing, so some file metadata may not have been carried over.';
+    default:
+      // `preserved`, `not_applicable`, `unknown` and anything unrecognized: nothing to report.
+      return '';
+  }
 }
 
 export function fileName(path: string): string {
@@ -251,8 +269,13 @@ export async function writeTo(ref: FileRef, bytes: Uint8Array, name: string, exp
     // A missing or unrecognized advisory report must not turn a committed write
     // into an uncertain failure and invite a duplicate retry.
     const metadata = (result as Record<string, unknown>).metadata;
-    const permissions = metadata && typeof metadata === 'object' ? (metadata as Record<string, unknown>).permissions : undefined;
-    nativeMetadata = { permissions: permissions === 'copied_to_temp' || permissions === 'not_applied' ? permissions : 'unknown' };
+    const reported = metadata && typeof metadata === 'object' ? metadata as Record<string, unknown> : {};
+    const permissions = reported.permissions;
+    const preservation = reported.preservation;
+    nativeMetadata = {
+      permissions: permissions === 'copied_to_temp' || permissions === 'not_applied' ? permissions : 'unknown',
+      preservation: preservation === 'preserved' || preservation === 'changed' || preservation === 'not_applicable' || preservation === 'not_verified' ? preservation : 'unknown',
+    };
     // Null means the write committed but the next normal save needs conflict handling.
     ref.identity = identity ?? undefined;
     // Re-probe the metadata the new file has, so the next focus check can skip the full read.

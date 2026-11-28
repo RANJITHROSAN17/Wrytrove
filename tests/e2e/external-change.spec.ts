@@ -103,17 +103,38 @@ test('a dirty conflict still requires confirmation before any overwrite', async 
   expect(await page.evaluate(() => (window as unknown as { __diskText: string }).__diskText)).toBe('external file');
 });
 
-test('native saves show a persistent and dismissible metadata limitation', async ({ page }) => {
+test('a native save that preserves the file it could check raises no notice', async ({ page }) => {
   await openNative(page);
-  await page.evaluate(() => { (window as unknown as { __saveSuccess: unknown }).__saveSuccess = { phase: 'committed', identity: 'fedcba9876543210fedcba9876543210', metadata: { permissions: 'copied_to_temp', acl: 'not_verified', other: 'not_verified' } }; });
+  // The ordinary shape: the staged operation succeeded and the post-commit inspection matched.
+  await page.evaluate(() => { (window as unknown as { __saveSuccess: unknown }).__saveSuccess = { phase: 'committed', identity: 'fedcba9876543210fedcba9876543210', metadata: { permissions: 'copied_to_temp', preservation: 'preserved' } }; });
+  await page.locator('.cm-content').click(); await page.keyboard.press('Control+End'); await page.keyboard.insertText(' saved');
+  await page.keyboard.press('Control+s');
+  await expect(page.locator('#toolbar-dirty')).toBeHidden();
+  await expect(page.locator('#toast')).toContainText('Saved draft.txt');
+  await expect(page.locator('#save-metadata-warning')).toBeHidden();
+});
+
+test('a native save that changed the file it could check shows a dismissible notice', async ({ page }) => {
+  await openNative(page);
+  await page.evaluate(() => { (window as unknown as { __saveSuccess: unknown }).__saveSuccess = { phase: 'committed', identity: 'fedcba9876543210fedcba9876543210', metadata: { permissions: 'copied_to_temp', preservation: 'changed' } }; });
   await page.locator('.cm-content').click(); await page.keyboard.press('Control+End'); await page.keyboard.insertText(' saved');
   await page.keyboard.press('Control+s');
   await expect(page.locator('#toolbar-dirty')).toBeHidden();
   const notice = page.locator('#save-metadata-warning');
   await expect(notice).toContainText('Saved “draft.txt”');
-  await expect(notice).toContainText('final permissions were not verified');
-  await expect(notice).toContainText('ACLs and other metadata were not verified and may change');
+  await expect(notice).toContainText('attributes differ from the original');
   await expect(notice).toBeVisible();
+  await page.getByRole('button', { name: 'Dismiss save metadata notice' }).click();
+  await expect(notice).toBeHidden();
+});
+
+test('a native save whose metadata could not be checked shows a dismissible notice', async ({ page }) => {
+  await openNative(page);
+  await page.evaluate(() => { (window as unknown as { __saveSuccess: unknown }).__saveSuccess = { phase: 'committed', identity: 'fedcba9876543210fedcba9876543210', metadata: { permissions: 'copied_to_temp', preservation: 'not_verified' } }; });
+  await page.locator('.cm-content').click(); await page.keyboard.press('Control+End'); await page.keyboard.insertText(' saved');
+  await page.keyboard.press('Control+s');
+  const notice = page.locator('#save-metadata-warning');
+  await expect(notice).toContainText('could not be checked after writing');
   await page.getByRole('button', { name: 'Dismiss save metadata notice' }).click();
   await expect(notice).toBeHidden();
 });
@@ -124,7 +145,8 @@ test('missing native metadata is reported as unknown without treating a committe
   await page.locator('.cm-content').click(); await page.keyboard.press('Control+End'); await page.keyboard.insertText(' saved');
   await page.keyboard.press('Control+s');
   await expect(page.locator('#toolbar-dirty')).toBeHidden();
-  await expect(page.locator('#save-metadata-warning')).toContainText('permissions value was applied to the temporary file is unknown');
+  // Nothing was reported about the final file, so the save must not invent a limitation.
+  await expect(page.locator('#save-metadata-warning')).toBeHidden();
   await expect(page.locator('#toast')).toContainText('Saved draft.txt');
 });
 
@@ -183,7 +205,7 @@ test('native capture leaves an open dirty note intact and retains its old save i
           if (win.__writes > 1) throw { phase: 'revalidate', kind: 'conflict', message: 'changed' };
           win.__diskText = new TextDecoder().decode(args as Uint8Array);
           identity = 'fedcba9876543210fedcba9876543210';
-          return { phase: 'committed', identity, metadata: { permissions: 'copied_to_temp', acl: 'not_verified', other: 'not_verified' } };
+          return { phase: 'committed', identity, metadata: { permissions: 'copied_to_temp', preservation: 'preserved' } };
         }
         return undefined;
       },
@@ -200,8 +222,8 @@ test('native capture leaves an open dirty note intact and retains its old save i
   await page.locator('#capture-text').fill('native capture');
   await page.locator('#capture-submit').click();
   await expect(page.locator('#toast')).toContainText('open tab was not updated');
-  await expect(page.locator('#save-metadata-warning')).toContainText('Saved “Inbox.md”');
-  await expect(page.locator('#save-metadata-warning')).toContainText('ACLs and other metadata were not verified');
+  // The capture appended to an existing note whose metadata the save could check and preserve.
+  await expect(page.locator('#save-metadata-warning')).toBeHidden();
   await expect(page.locator('.cm-content')).toContainText('native original unsaved draft');
   await expect(page.locator('#disk-change-warning')).toContainText('unsaved edits are preserved');
   expect(await page.evaluate(() => (window as unknown as { __diskText: string }).__diskText)).toContain('native capture');

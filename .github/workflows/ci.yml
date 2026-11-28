@@ -71,7 +71,18 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev libssl-dev
 
       - name: Rust tests (including the IPC capability boundary)
-        run: cargo test --manifest-path src-tauri/Cargo.toml --lib --locked
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib --locked 2>&1 | tee rust-test-output.txt
+        # The Linux job owns the only cfg(not(windows)) tests, so a failure here is otherwise
+        # invisible from the job page. Surface a bounded excerpt the way the Windows job does.
+      - name: Report Rust test failures as annotations
+        if: ${{ failure() }}
+        run: |
+          if [ ! -f rust-test-output.txt ]; then
+            echo '::error title=Rust tests::No cargo output was captured.'
+            exit 0
+          fi
+          excerpt=$(tail -n 80 rust-test-output.txt | sed -e 's/%/%25/g' -e 's/\r/%0D/g' | awk 'BEGIN{ORS="%0A"} {print}')
+          echo "::error title=Rust tests::${excerpt}"
 
   e2e:
     name: Browser end-to-end (Playwright)

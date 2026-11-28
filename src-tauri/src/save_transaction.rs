@@ -59,19 +59,55 @@ pub enum PermissionAction {
     NotApplied,
 }
 
+/// What the save was actually able to check about the file it left behind. Every value describes a
+/// metadata comparison this crate can perform; none of them is a durability guarantee.
+///
+/// The save deliberately does not claim anything about the Windows DACL. The staged file is
+/// created fresh beside the destination and therefore inherits only the parent directory's
+/// inheritable access control entries, so an explicit, non-inherited ACL on the original is not
+/// carried across the rename. Reporting that as a warning on every save told the user nothing they
+/// could act on, so the banner is now driven by what the post-commit inspection really finds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetadataPreservation {
+    /// The destination did not exist before the save, so there was no metadata to carry over.
+    NotApplicable,
+    /// Every part of the final file's inspectable metadata matches the original's.
+    Preserved,
+    /// The final file's inspectable metadata differs from the original's.
+    Changed,
+    /// The final file could not be inspected after the commit.
+    NotVerified,
+}
+
+impl MetadataPreservation {
+    fn name(self) -> &'static str {
+        match self {
+            Self::NotApplicable => "not_applicable",
+            Self::Preserved => "preserved",
+            Self::Changed => "changed",
+            Self::NotVerified => "not_verified",
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct SaveCommit {
     pub identity: Option<crate::file_identity::FileIdentity>,
     pub permissions: PermissionAction,
+    pub preservation: MetadataPreservation,
 }
 
-pub fn committed(identity: Option<String>, permissions: PermissionAction) -> serde_json::Value {
+pub fn committed(
+    identity: Option<String>,
+    permissions: PermissionAction,
+    preservation: MetadataPreservation,
+) -> serde_json::Value {
     let permissions = match permissions {
         PermissionAction::CopiedToTemp => "copied_to_temp",
         PermissionAction::NotApplied => "not_applied",
     };
     serde_json::json!({ "phase": "committed", "identity": identity,
-        "metadata": { "permissions": permissions, "acl": "not_verified", "other": "not_verified" } })
+        "metadata": { "permissions": permissions, "preservation": preservation.name() } })
 }
 
 #[cfg(test)]
@@ -79,12 +115,15 @@ mod tests {
     use super::*;
     #[test]
     fn serializes_structured_success_and_failures_without_durability_claims() {
-        assert_eq!(committed(Some("id".into()), PermissionAction::CopiedToTemp), serde_json::json!({
-            "phase": "committed", "identity": "id", "metadata": {"permissions": "copied_to_temp", "acl": "not_verified", "other": "not_verified"}
+        assert_eq!(committed(Some("id".into()), PermissionAction::CopiedToTemp, MetadataPreservation::Preserved), serde_json::json!({
+            "phase": "committed", "identity": "id", "metadata": {"permissions": "copied_to_temp", "preservation": "preserved"}
         }));
-        assert_eq!(committed(None, PermissionAction::NotApplied), serde_json::json!({
-            "phase": "committed", "identity": null, "metadata": {"permissions": "not_applied", "acl": "not_verified", "other": "not_verified"}
+        assert_eq!(committed(None, PermissionAction::NotApplied, MetadataPreservation::NotApplicable), serde_json::json!({
+            "phase": "committed", "identity": null, "metadata": {"permissions": "not_applied", "preservation": "not_applicable"}
         }));
+        // Only a detected difference or a failed inspection is worth reporting to the user.
+        assert_eq!(committed(None, PermissionAction::CopiedToTemp, MetadataPreservation::Changed)["metadata"]["preservation"], "changed");
+        assert_eq!(committed(None, PermissionAction::CopiedToTemp, MetadataPreservation::NotVerified)["metadata"]["preservation"], "not_verified");
         let failure = SaveFailure::new(SavePhase::Replace, "Cannot replace the original file: denied").json();
         assert_eq!(failure["phase"], "replace");
         assert_eq!(failure["kind"], "failure");
