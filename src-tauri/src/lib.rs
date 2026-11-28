@@ -269,15 +269,86 @@ fn atomic_write_with_operations(
     Ok(SaveCommit { identity: committed_identity, permissions })
 }
 
+/// Read the invoke payload for `safe_write`, whichever IPC transport delivered it.
+///
+/// `invoke` with a raw payload (`Uint8Array`) only reaches Rust as
+/// [`tauri::ipc::InvokeBody::Raw`] while Tauri's IPC custom protocol is usable. When the webview
+/// refuses that fetch — a CSP that does not allow the `ipc` host, or a platform that blocks the
+/// custom protocol — Tauri silently retries the very same call through `window.ipc.postMessage`,
+/// where the payload is serialized as JSON. Both shapes are accepted so a save keeps working on
+/// either transport instead of failing with "Expected raw file data." `tests/ipc-body.test.ts`
+/// pins the JavaScript half of this conversion.
+fn invoke_payload_bytes(body: &tauri::ipc::InvokeBody) -> Result<Vec<u8>, String> {
+    match body {
+        tauri::ipc::InvokeBody::Raw(bytes) => Ok(bytes.clone()),
+        tauri::ipc::InvokeBody::Json(value) => json_payload_bytes(value),
+    }
+}
+
+/// JSON forms of the same bytes: a number array (what a `Uint8Array` becomes inside a JSON
+/// payload), a base64 string, or either of those under a `bytes` field.
+fn json_payload_bytes(value: &serde_json::Value) -> Result<Vec<u8>, String> {
+    let payload = match value {
+        serde_json::Value::Object(fields) => fields.get("bytes").ok_or("Missing file data.")?,
+        other => other,
+    };
+    match payload {
+        serde_json::Value::Array(items) => items
+            .iter()
+            .map(|item| {
+                item.as_u64()
+                    .and_then(|byte| u8::try_from(byte).ok())
+                    .ok_or_else(|| "Invalid file data.".to_string())
+            })
+            .collect(),
+        serde_json::Value::String(text) => base64_decode(text),
+        _ => Err("Invalid file data.".into()),
+    }
+}
+
+/// Minimal standard-alphabet base64 decoder. Tauri ships no base64 dependency, and the decoded
+/// payload is still size-checked before it reaches the filesystem.
+fn base64_decode(text: &str) -> Result<Vec<u8>, String> {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut lookup = [u8::MAX; 256];
+    for (index, symbol) in ALPHABET.iter().enumerate() {
+        lookup[usize::from(*symbol)] = index as u8;
+    }
+    let mut sextets: Vec<u8> = Vec::with_capacity(text.len());
+    for symbol in text.bytes() {
+        match symbol {
+            // Padding only ever terminates the payload.
+            b'=' => break,
+            b'\r' | b'\n' | b'\t' | b' ' => continue,
+            other => {
+                let value = lookup[usize::from(other)];
+                if value == u8::MAX { return Err("Invalid base64 file data.".into()); }
+                sextets.push(value);
+            }
+        }
+    }
+    let mut bytes = Vec::with_capacity(sextets.len() / 4 * 3 + 3);
+    for group in sextets.chunks(4) {
+        // A trailing quantum of one symbol carries no information.
+        if group.len() == 1 { return Err("Invalid base64 file data.".into()); }
+        let mut buffer = 0u32;
+        for (index, sextet) in group.iter().enumerate() {
+            buffer |= u32::from(*sextet) << (18 - 6 * index);
+        }
+        bytes.push((buffer >> 16) as u8);
+        if group.len() > 2 { bytes.push((buffer >> 8) as u8); }
+        if group.len() > 3 { bytes.push(buffer as u8); }
+    }
+    Ok(bytes)
+}
+
 /// Only files or folders selected, dropped, or launched by the user are in the
-/// plugin's dynamic scope. Body is raw bytes; the path is percent-encoded.
+/// plugin's dynamic scope. The body is the file bytes on either IPC transport;
+/// the path is percent-encoded.
 #[tauri::command]
 async fn safe_write(app: tauri::AppHandle, request: tauri::ipc::Request<'_>) -> Result<serde_json::Value, serde_json::Value> {
     let prepared = (|| -> Result<_, String> {
-        let data = match request.body() {
-            tauri::ipc::InvokeBody::Raw(data) => data.clone(),
-            _ => return Err("Expected raw file data.".into()),
-        };
+        let data = invoke_payload_bytes(request.body())?;
         if data.len() > MAX_FILE_BYTES { return Err("This file exceeds the 20 MiB safety limit.".into()); }
         let header = |key: &str| -> Result<String, String> {
             request.headers().get(key).and_then(|h| h.to_str().ok()).map(str::to_owned).ok_or_else(|| format!("Missing {key} header."))
@@ -667,6 +738,30 @@ mod tests {
         let (_, negative_monitor) = fit_initial_geometry((1200, 900), (1180, 850), (0, 0), (-1920, -100, 1600, 900)).unwrap();
         assert!(negative_monitor.0 >= -1920 && negative_monitor.0 < 0);
         assert!(negative_monitor.1 >= -100);
+    }
+    #[test]
+    fn safe_write_reads_the_payload_on_either_ipc_transport() {
+        // `Raw` is the IPC custom-protocol shape; every JSON shape below is what the same invoke
+        // becomes once Tauri falls back to `window.ipc.postMessage`.
+        assert_eq!(invoke_payload_bytes(&tauri::ipc::InvokeBody::Raw(b"draft".to_vec())).unwrap(), b"draft");
+        let from_json = |value: serde_json::Value| -> Vec<u8> {
+            invoke_payload_bytes(&tauri::ipc::InvokeBody::from(value)).unwrap()
+        };
+        assert_eq!(from_json(serde_json::json!([100, 114, 97, 102, 116])), b"draft");
+        assert_eq!(from_json(serde_json::json!({ "bytes": [100, 114, 97, 102, 116] })), b"draft");
+        assert_eq!(from_json(serde_json::json!("ZHJhZnQ=")), b"draft");
+        assert_eq!(from_json(serde_json::json!({ "bytes": "ZHJhZnQ=" })), b"draft");
+        assert_eq!(from_json(serde_json::json!([])), Vec::<u8>::new());
+        // Anything that is not bytes must be refused rather than written as an empty file.
+        for rejected in [serde_json::json!({}), serde_json::json!({ "bytes": 7 }), serde_json::json!([300]),
+            serde_json::json!("not base64!"), serde_json::json!("A"), serde_json::json!(null)] {
+            let body = tauri::ipc::InvokeBody::from(rejected);
+            assert!(invoke_payload_bytes(&body).is_err(), "accepted {body:?}");
+        }
+        assert_eq!(base64_decode("TQ==").unwrap(), b"M");
+        assert_eq!(base64_decode("TWE=").unwrap(), b"Ma");
+        assert_eq!(base64_decode("TWFu").unwrap(), b"Man");
+        assert_eq!(base64_decode("").unwrap(), Vec::<u8>::new());
     }
     #[test]
     fn safe_write_detects_external_changes_and_preserves_original() {

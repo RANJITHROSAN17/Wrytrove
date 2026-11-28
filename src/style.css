@@ -170,8 +170,11 @@ svg { flex: none; vertical-align: middle; }
 .tab.active { color: var(--text); background: var(--editor); }
 .tab.active::after { position: absolute; content: ''; left: 0; right: 0; top: 0; height: 2px; background: var(--accent-strong); }
 .tab .file-icon { background: transparent; width: auto; height: auto; margin: 0 2px 0 0; font-size: 10px; }
-.tab-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
-.tab-close { display: grid; place-items: center; width: 21px; height: 21px; margin-left: auto; border: 0; padding: 0; background: transparent; border-radius: 4px; color: var(--dim); }
+/* `min-width: 0` lets the name ellipsize instead of holding its full min-content width, and
+   `flex: none` keeps the close button inside the tab's 235px cap. Without both, a long filename
+   pushes the X past the tab edge and out of the visible strip. */
+.tab-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.tab-close { display: grid; place-items: center; flex: none; width: 21px; height: 21px; margin-left: auto; border: 0; padding: 0; background: transparent; border-radius: 4px; color: var(--muted); }
 .tab-close:hover { color: var(--text); background: var(--hover); }
 .tab-close svg { width: 13px; height: 13px; }
 .tab-add { align-self: center; margin-left: 7px; }
