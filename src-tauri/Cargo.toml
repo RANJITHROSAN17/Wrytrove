@@ -17,7 +17,11 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
-tauri-plugin-http = "2.9"
+# `unsafe-headers` lets the app send an explicitly empty Origin, which the plugin then
+# drops. Without it the plugin stamps every request with the webview origin
+# (`https://tauri.localhost` on Windows release builds), which Ollama's default CORS
+# allow-list rejects with HTTP 403. See OLLAMA_HEADERS in src/ai.ts.
+tauri-plugin-http = { version = "2.9", features = ["unsafe-headers"] }
 tauri-plugin-opener = "2"
 tauri-plugin-persisted-scope = "2"
 tauri-plugin-single-instance = "2"

@@ -10,6 +10,20 @@ export const AI_CONTEXT_AFTER = 1200;
 export const MAX_OLLAMA_RESPONSE_BYTES = 262_144;
 const MAX_OLLAMA_ERROR_BYTES = 8_192;
 
+/**
+ * Ollama requests must leave this machine with no Origin header.
+ *
+ * `tauri-plugin-http` stamps every request with the webview's origin, which on a
+ * Windows release build is `https://tauri.localhost`. Ollama's default CORS
+ * allow-list covers `tauri://*` (the Linux/macOS origin) but not that Windows
+ * origin, so an installed build was rejected with HTTP 403 before the request ever
+ * reached the API — while a dev build, served from `http://localhost:<port>`, was
+ * allowed. Sending an explicitly empty Origin makes the plugin drop the header
+ * entirely; that needs the plugin's `unsafe-headers` feature (see src-tauri/Cargo.toml).
+ * The header is also simply not Ollama's business: it describes the app, not the text.
+ */
+const OLLAMA_HEADERS: Record<string, string> = { Origin: '' };
+
 /** A boundary between the two code units of one non-BMP character. */
 function splitsSurrogatePair(text: string, index: number): boolean {
   const before = text.charCodeAt(index - 1);
@@ -47,7 +61,7 @@ export function firstSuggestion(value: unknown): string {
 
 export async function listModels(signal?: AbortSignal): Promise<string[]> {
   if (!desktop) throw new Error('AI is available in the Windows desktop app, not this browser preview.');
-  const response = await nativeFetch(`${OLLAMA_API_BASE}/api/tags`, { method: 'GET', signal, maxRedirections: 0 });
+  const response = await nativeFetch(`${OLLAMA_API_BASE}/api/tags`, { method: 'GET', headers: OLLAMA_HEADERS, signal, maxRedirections: 0 });
   if (!response.ok) { await response.body?.cancel().catch(() => {}); throw new Error(`Ollama responded with HTTP ${response.status}.`); }
   const body = await boundedJson(response, MAX_OLLAMA_RESPONSE_BYTES, 'Ollama response is too large.') as { models?: unknown };
   if (!Array.isArray(body?.models)) return [];
@@ -60,7 +74,7 @@ export async function complete(text: string, cursor: number, model: string, sign
   if (!desktop) throw new Error('AI is available in the Windows desktop app, not this browser preview.');
   const response = await nativeFetch(AI_PROVIDERS.ollama.endpoint, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { ...OLLAMA_HEADERS, 'Content-Type': 'application/json' },
     body: JSON.stringify(buildCompletionRequest(text, cursor, model)),
     signal,
     maxRedirections: 0,
@@ -86,7 +100,7 @@ export async function runAction(
   const body = buildActionRequest(input);
   const response = await nativeFetch(AI_PROVIDERS.ollama.endpoint, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { ...OLLAMA_HEADERS, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
     signal,
     maxRedirections: 0,

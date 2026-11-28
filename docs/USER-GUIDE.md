@@ -75,6 +75,14 @@ Open the address Vite prints. This preview exercises the same editing UI. Depend
 
 The implementation uses Ollama's [`/api/generate`](https://docs.ollama.com/api/generate) fill-in-the-middle `prompt` and `suffix` fields, which require a compatible model. Suggestions are currently **single-line**, may be wrong, and are not semantic/LSP-aware. The quality and latency depend on the model and your computer.
 
+**If *Check connection* reports `HTTP 403`**, Ollama refused the request itself — not a firewall. Builds before this fix sent an `Origin: https://tauri.localhost` header, which Ollama's default CORS allow-list rejects (it allows `tauri://*`, the Linux/macOS origin, but not the Windows one). Update Wrytrove, or add the origin to Ollama and restart it (quit from the tray, then relaunch):
+
+```powershell
+[Environment]::SetEnvironmentVariable('OLLAMA_ORIGINS', 'https://tauri.localhost', 'User')
+```
+
+`OLLAMA_ORIGINS` is added to Ollama's built-in origins, so nothing else stops working. If a 403 survives that, or you get a connection error instead, Ollama is not running or is not listening on the default `127.0.0.1:11434`.
+
 ## AI actions on a selection
 
 AI actions are a separate, deliberately reviewable workflow. Inline suggestions can stay off; actions use the same Ollama model name you entered in the AI panel.
