@@ -570,8 +570,13 @@ textarea:focus-visible { outline: 2px solid var(--accent-strong); outline-offset
 .status-chip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--status-text); padding: 2px 8px; font-size: 10.5px; }
 .status-chip:hover { color: var(--text); background: var(--hover); border-color: var(--line); }
 .status-chip svg { width: 12px; height: 12px; }
-#goal-chip[hidden], #focus-chip[hidden] { display: none; }
+#goal-chip[hidden], #focus-chip[hidden], #dictation-chip[hidden] { display: none; }
 .status-chip.met { color: var(--syntax-green); }
+/* A live microphone is the one status that must be impossible to miss. */
+#dictation-chip:not([hidden]) { color: var(--syntax-green); border-color: var(--syntax-green); }
+#dictation-chip:not([hidden]) svg { animation: dictation-pulse 1.6s ease-in-out infinite; }
+@keyframes dictation-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { #dictation-chip:not([hidden]) svg { animation: none; } }
 
 /* Focus, typewriter and zen modes */
 .cm-focus-active { background: #ae94df18; border-radius: 3px; }

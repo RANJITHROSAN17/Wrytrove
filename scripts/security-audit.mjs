@@ -55,6 +55,9 @@ const openerUrls = openerPermission?.allow?.map((/** @type {any} */ entry) => en
 const expectedHttp = [
   'http://127.0.0.1:11434/api/generate',
   'http://127.0.0.1:11434/api/tags',
+  'http://127.0.0.1:8080/v1/audio/transcriptions',
+  'http://127.0.0.1:5000/inference',
+  'http://127.0.0.1:2700/api/v1/recognize',
   'https://api.arena.ai/v1/chat/completions',
 ].sort();
 const expectedOpener = [

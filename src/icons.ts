@@ -38,6 +38,8 @@ const paths: Record<string, string> = {
   ruler: '<path d="M4 15 15 4l5 5L9 20H4z"/><path d="M7 12l2 2M10 9l2 2M13 6l2 2"/>',
   spellcheck: '<path d="m4 17 5-11 5 11M6 13h6M16 15l1.6 1.6L21 13"/>',
   sliders: '<path d="M4 7h10M18 7h2M4 17h2m4 0h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/>',
+  // A microphone, so the dictation button reads as "speak" rather than falling back to info.
+  mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6"/>',
 };
 export function icon(name: string, size = 16): string {
   return `<svg aria-hidden="true" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round">${paths[name] || paths.info}</svg>`;

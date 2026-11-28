@@ -21,6 +21,11 @@
 - Add optional **smart typography** (curly quotes, dashes, ellipsis) that only ever rewrites a single typed character, never a paste or IME composition, and never inside code.
 - Add settings for font family (editor/serif/sans/mono), browser spell-check, a ruler column, minimap, smart typography, focus scope, daily goal and the daily-note folder. Stored daily-note folders are validated as relative paths so a note can never be written outside the workspace.
 
+### Voice
+
+- Add **dictation** (`Ctrl+Shift+M`, or the microphone button in the toolbar): speech is recorded in the app and transcribed by a speech server on your own computer, then inserted at the caret in one undo step per spoken chunk. Consent is per-session and never written to storage, so a restart always starts with the microphone closed, and a live session is shown as a pulsing **Listening** status chip.
+- Dictation reaches only three pinned loopback addresses (`127.0.0.1:8080`, `127.0.0.1:5000`, `127.0.0.1:2700`) chosen in Settings, and those same addresses are pinned in the desktop capability file and the content security policy — no setting, file or extension can redirect recorded audio anywhere else. A missing server, a refused microphone or an unrecognised response is reported as a plain sentence and closes the session; it never retries in the background. Wake words are not implemented.
+
 ### The notes layer
 
 - Add a **Notes rail** with three views: an **outline** of the current note, **tags** from `#tag` and front matter (for this note and across the index), and **links** — outbound `[[wiki links]]` with broken/ambiguous states, **backlinks**, and orphan notes.

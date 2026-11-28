@@ -3,6 +3,7 @@ import { DEFAULT_MODEL } from './ai';
 import { sanitizeFocus, type FocusSettings } from './focus-mode';
 import { sanitizeGoal, type WritingGoal } from './word-stats';
 import { DAILY_FORMATS, DEFAULT_DAILY_TEMPLATE, isSafeRelativePath, type DailyFormat } from './daily';
+import { DEFAULT_SPEECH_ENDPOINT, LOCAL_SPEECH_ENDPOINTS, normalizeChunkMs, normalizeSpeechLanguage } from './dictation';
 
 export interface Settings {
   theme: 'dark' | 'light';
@@ -37,6 +38,11 @@ export interface Settings {
   daily: { format: DailyFormat; template: string; folder: string };
   /** Path of the capture file inside the opened folder; empty means `Inbox.md`. */
   capturePath: string;
+  /**
+   * Dictation against a speech server on this computer. `enabled` is session-only consent, like
+   * `aiEnabled`: it is never restored from storage, so every launch starts with the microphone off.
+   */
+  dictation: { enabled: boolean; endpoint: string; chunkMs: number; language: string };
 }
 
 export const defaults: Settings = {
@@ -46,6 +52,7 @@ export const defaults: Settings = {
   focus: sanitizeFocus(null), goal: { target: 0, date: '' },
   daily: { format: 'yyyy-mm-dd', template: DEFAULT_DAILY_TEMPLATE, folder: 'Daily' },
   capturePath: '',
+  dictation: { enabled: false, endpoint: DEFAULT_SPEECH_ENDPOINT, chunkMs: 4000, language: 'en' },
 };
 export const SETTINGS_KEY = 'wrytrove.settings.v1';
 /** Read-only compatibility for settings saved before the Wrytrove rename. */
@@ -112,18 +119,35 @@ export function loadSettings(): LoadedSettings {
           folder: typeof saved.daily?.folder === 'string' && isSafeRelativePath(saved.daily.folder) ? saved.daily.folder : 'Daily',
         },
         capturePath: typeof saved.capturePath === 'string' && saved.capturePath.length <= 200 ? saved.capturePath : '',
+        // Consent is never read back from storage; only the server choice is remembered.
+        dictation: sanitizeDictation(saved.dictation),
       },
     };
   } catch {
     // A saved recovery snapshot may contain unsaved work. The caller must not delete or overwrite it.
-    return { settings: { ...defaults, recovery: false, aiEnabled: false }, readFailed: true };
+    return { settings: { ...defaults, recovery: false, aiEnabled: false, dictation: { ...defaults.dictation, enabled: false } }, readFailed: true };
   }
+}
+
+/**
+ * Keep the remembered dictation server choice inside the audited allow-list. An unknown id falls
+ * back to the default rather than reaching for a URL the capability file never granted.
+ */
+function sanitizeDictation(value: unknown): Settings['dictation'] {
+  const saved = (value && typeof value === 'object' ? value : {}) as Partial<Settings['dictation']>;
+  const known = LOCAL_SPEECH_ENDPOINTS.some((entry) => entry.id === saved.endpoint);
+  return {
+    enabled: false,
+    endpoint: known && saved.endpoint ? saved.endpoint : DEFAULT_SPEECH_ENDPOINT,
+    chunkMs: normalizeChunkMs(saved.chunkMs),
+    language: normalizeSpeechLanguage(saved.language),
+  };
 }
 
 /** Return failure to the UI. AI consent is deliberately not persisted across launches. */
 export function saveSettings(settings: Settings): boolean {
   try {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...settings, aiEnabled: false, recentFiles: settings.rememberRecent ? settings.recentFiles.slice(0, 20) : [] }));
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({ ...settings, aiEnabled: false, dictation: { ...settings.dictation, enabled: false }, recentFiles: settings.rememberRecent ? settings.recentFiles.slice(0, 20) : [] }));
     return true;
   } catch { return false; }
 }

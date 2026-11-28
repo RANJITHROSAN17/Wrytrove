@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { defaults, isValidSession, loadSettings, saveSettings, SETTINGS_KEY, LEGACY_SETTINGS_KEY, LEGACY_DB } from '../src/storage';
 import { DEFAULT_DAILY_TEMPLATE } from '../src/daily';
+import { DEFAULT_SPEECH_ENDPOINT } from '../src/dictation';
 
 function memoryStorage(initial: Record<string, string> = {}): Storage {
   const values = new Map(Object.entries(initial));
@@ -74,6 +75,35 @@ describe('settings persistence and session-only AI consent', () => {
     vi.stubGlobal('localStorage', { ...backing, setItem: () => { throw new DOMException('Storage full', 'QuotaExceededError'); } });
     expect(saveSettings({ ...defaults, aiEnabled: false, recovery: false })).toBe(false);
     expect(loadSettings().settings).toMatchObject({ aiEnabled: false, recovery: true });
+  });
+
+  it('never restores dictation consent, but keeps the chosen speech server', () => {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+      dictation: { enabled: true, endpoint: 'whispercpp', chunkMs: 8000, language: 'ta' },
+    }));
+    const loaded = loadSettings().settings;
+    expect(loaded.dictation.enabled).toBe(false);
+    expect(loaded.dictation).toMatchObject({ endpoint: 'whispercpp', chunkMs: 8000, language: 'ta' });
+  });
+
+  it('falls back to the default speech server for an unknown or malformed choice', () => {
+    for (const value of [{ endpoint: 'evil.example' }, { endpoint: 7 }, { chunkMs: 'wide', language: 'a'.repeat(40) }, 'nonsense']) {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify({ dictation: value }));
+      expect(loadSettings().settings.dictation).toEqual({
+        enabled: false, endpoint: DEFAULT_SPEECH_ENDPOINT, chunkMs: 4000, language: 'en',
+      });
+    }
+  });
+
+  it('never persists an active dictation session to storage', () => {
+    expect(saveSettings({ ...defaults, dictation: { ...defaults.dictation, enabled: true, chunkMs: 2000 } })).toBe(true);
+    expect(JSON.parse(localStorage.getItem(SETTINGS_KEY)!).dictation).toMatchObject({ enabled: false, chunkMs: 2000 });
+    expect(loadSettings().settings.dictation.enabled).toBe(false);
+  });
+
+  it('starts with dictation off even when settings cannot be read', () => {
+    vi.stubGlobal('localStorage', { getItem: () => { throw new DOMException('Blocked', 'SecurityError'); } });
+    expect(loadSettings()).toMatchObject({ readFailed: true, settings: { dictation: { enabled: false } } });
   });
 
   it('keeps recent paths opt-in, limited and removable', () => {

@@ -25,6 +25,7 @@ Wrytrove is an early, free and open-source Windows text-editor prototype. It aim
 - UTF-8 (with or without BOM), BOM-marked UTF-16 LE/BE, and LF/CRLF/CR detection and output. Invalid UTF-8, UTF-32 BOMs, and text containing NUL are rejected. The app cannot detect every binary or legacy-encoded file. Mixed line endings are flagged; saving normalizes them after confirmation.
 - Opt-out local session recovery, including unsaved content; local snapshots are **unencrypted** and are not a backup.
 - A writing surface for ordinary Markdown files: live word count and reading time, an optional daily word goal, quick capture to a folder note, daily notes from an expandable template, outline/tags/backlinks, a bounded local note index and focus/typewriter/zen modes. See **Notes and the writing surface**.
+- Optional dictation: click the microphone button in the toolbar, speak, and the text is inserted where the caret is. Audio is recorded in the app and transcribed by a speech server on your own computer. See **Dictation** below.
 - Optional, opt-in, single-line inline AI suggestions from a locally addressed Ollama server. Tab accepts a suggestion; Esc dismisses it. The active document's nearby text is sent to Ollama only after opt-in; see **Privacy** below.
 - Optional AI actions on one explicit selection (Improve, Fix grammar, Shorten, Expand, Summarize, Bullet points, Explain and Custom). Replace actions open the usual diff review; Explain is read-only. Only the selected text and your instruction are sent, after a separate per-session consent. See **AI actions on a selection** below.
 - Save-time external-change check and same-directory temporary-file replacement for native saves. This mitigates common accidental overwrites, but is not a transactional guarantee across all filesystems; see limitations below.
@@ -61,6 +62,26 @@ npm run dev
 ```
 
 Open the address Vite prints. This preview exercises the same editing UI. Depending on browser support and permissions, it may use the File System Access API or download a copy when saving; it cannot access native Windows dialogs, file associations, or your PC's Ollama service. It does **not** demonstrate Windows integration.
+
+## Dictation
+
+Dictation turns speech into text in the editor. It is deliberately built so that no audio leaves your computer: the recording is captured inside the app and sent to a speech server running on this machine, not to a cloud service.
+
+**Turning it on.** Open **Settings → Dictation** and turn the switch on. Consent lasts only until the app exits — it is never saved to storage, so a restart always begins with the microphone closed. Then click the microphone button in the toolbar, or press **Ctrl+Shift+M**. Press either again to stop. The status bar shows a pulsing **Listening** chip while a session is live.
+
+**Where the text goes.** Recognised text is inserted at the caret in the active document, in one undo step per spoken chunk. Click into the editor first if you have not already; a document with no caret has nowhere to put the text. Dictation needs an open document.
+
+**The speech server.** Dictation does not transcribe on its own — it needs one of these local servers running, with a model loaded:
+
+| Choose in Settings | Run this on your computer |
+| --- | --- |
+| speaches / faster-whisper-server (port 8080) | an OpenAI-compatible local transcription server on `http://127.0.0.1:8080` |
+| whisper.cpp server (port 5000) | `whisper-server` on `http://127.0.0.1:5000` |
+| vosk-server (port 2700) | `vosk-server` on `http://127.0.0.1:2700` |
+
+Those three addresses are the only ones the app can reach for dictation. They are pinned in the desktop capability file and in the app's content security policy, so no setting, file or extension can redirect your audio somewhere else. If the server is not running, or has no model loaded, the failure is reported as a plain sentence and the session closes — it does not retry in the background.
+
+**Privacy.** Recorded audio and the transcript stay on this machine. Wrytrove adds no telemetry, and a dictated transcript is not used for anything except inserting it into your document. Because consent is per-session, a reload or restart cannot leave the microphone open.
 
 ## Set up optional AI suggestions
 
@@ -170,6 +191,7 @@ In either workflow, review works on **one nonempty selected range** (up to 100,0
 
 - Inline Ollama AI starts off on every launch, even if an older version stored an enabled setting. It runs only after explicit consent for the current session; that consent is not persisted. When enabled, at most 3,500 UTF-16 code units before and 1,200 after the cursor are sent to `http://127.0.0.1:11434`; Wrytrove does not add the file path, but the text itself may contain one. AI actions use a separate consent, asked once per session per model on first use; they send at most 12,000 selected characters plus up to 2,000 characters of instruction, and never add a path or surrounding text. Cancelling the consent sends nothing. Requests are cancelled/ignored when edits or cursor changes make them stale. Wrytrove contains no analytics or account system. The separate, optional Arena API is a **cloud endpoint** and sends only your explicit question or instruction and optional captured text, plus a fixed task instruction, after per-request confirmation, as described above.
 - A loopback address by itself does **not** guarantee that Ollama or a selected model will never forward data: [Ollama documents cloud models through its local API](https://docs.ollama.com/api/authentication). Choose a genuinely local model, inspect its configuration and [disable cloud features in Ollama](https://docs.ollama.com/cloud) if appropriate. Follow your organization's policy. Model downloads and installing WebView2 can require network access.
+- Dictation starts off on every launch and consent is never persisted, matching the AI-suggestions behaviour. Audio is recorded in the app and sent only to one of three pinned loopback addresses on this computer (`127.0.0.1:8080`, `127.0.0.1:5000`, `127.0.0.1:2700`) that you pick in Settings; the desktop capability file and the content security policy both restrict dictation to those addresses. Nothing is uploaded, and no transcript is stored by Wrytrove.
 - Session recovery is on by default and stores open document text, unsaved text, file paths, cursor positions and related metadata in the local WebView IndexedDB database. Settings are stored in local storage. They are not encrypted by Wrytrove; OS disk encryption and access controls are separate. Turning off **Remember my session** attempts to delete the current stored session; deletion is not a secure erase. If it fails, a persistent warning offers **Retry removal**. File-access scopes are separately persisted by Tauri to restore access after restart.
 - Recent native paths are off by default. If enabled, up to 20 are saved in local storage, unencrypted. Turn the setting off or choose **Clear recent files** to remove that list; Wrytrove warns if storage failure prevents clearing it. Recent-file storage is independent of recovery snapshots and the Tauri persisted file-access scope.
 - If settings cannot be saved, Wrytrove warns that changes—including a recovery opt-out—may revert after restart. If settings cannot be read, recovery is paused and an existing snapshot is left untouched. If a snapshot cannot be read or is incompatible, Wrytrove also pauses recovery rather than replacing it with example files; save new work separately. An explicit confirmation is required before deleting an unreadable snapshot.
@@ -215,6 +237,7 @@ The app was previously named Morrow. Wrytrove reads old local settings (`morrow.
 | Notes panel / outline palette | `Ctrl+Alt+B` / `Ctrl+Shift+O` |
 | Focus / typewriter / zen | `F8` / `F9` / `F11` |
 | Zoom in / out / reset | `Ctrl++` / `Ctrl+-` / `Ctrl+0` |
+| Dictate (start / stop) | `Ctrl+Shift+M` |
 | Request AI / accept / dismiss | `Ctrl+Shift+Space` / `Tab` / `Esc` |
 
 ## Development and tests
