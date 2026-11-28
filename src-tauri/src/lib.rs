@@ -1070,22 +1070,31 @@ mod tests {
         let path = dir.path().join("notes.txt");
         fs::write(&path, b"one").unwrap();
         let before = fs::metadata(&path).unwrap();
+        // The same file must compare equal, or every ordinary save would look like a change.
+        assert!(inspectable_metadata_matches(&before, &before));
+        assert_eq!(inspect_committed_metadata(&path, Some(&before)), MetadataPreservation::Preserved);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             // Flip a bit that is currently clear so the comparison cannot depend on the umask.
-            let mode = fs::metadata(&path).unwrap().permissions().mode();
+            let mode = before.permissions().mode();
             let flipped = if mode & 0o222 == 0 { 0o644 } else { mode & !0o222 };
             fs::set_permissions(&path, fs::Permissions::from_mode(flipped)).unwrap();
+            assert_eq!(inspect_committed_metadata(&path, Some(&before)), MetadataPreservation::Changed);
         }
         #[cfg(windows)]
         {
-            use std::os::windows::fs::PermissionsExt;
-            let mut permissions = fs::metadata(&path).unwrap().permissions();
-            permissions.set_readonly(true);
-            fs::set_permissions(&path, permissions).unwrap();
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+            // The attribute is set when the file is created: `PermissionsExt::set_readonly` is
+            // still unstable on stable Rust, so it cannot be used here.
+            let hidden = dir.path().join("hidden.txt");
+            fs::OpenOptions::new().write(true).create(true).custom_flags(FILE_ATTRIBUTE_HIDDEN)
+                .open(&hidden).unwrap();
+            let concealed = fs::metadata(&hidden).unwrap();
+            assert!(!inspectable_metadata_matches(&before, &concealed));
+            assert!(!inspectable_metadata_matches(&concealed, &before));
         }
-        assert_eq!(inspect_committed_metadata(&path, Some(&before)), MetadataPreservation::Changed);
     }
     #[test]
     fn save_metadata_must_be_explicit_and_valid() {
