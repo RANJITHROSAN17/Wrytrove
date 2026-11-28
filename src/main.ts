@@ -831,6 +831,10 @@ class WrytroveApp {
       this.scheduleRecovery();
       this.enqueueSavedNote(target.ref, outcome.digest);
       this.toast(target.ref.kind === 'download' ? 'A copy was downloaded. Browser preview cannot overwrite the original file.' : `Saved ${doc.name}.`);
+      // Clicking the toolbar save button leaves focus on that button, so anything typed, pasted or
+      // dictated straight after a save would be dropped. A keyboard save is already here, which
+      // makes this a no-op rather than a second code path.
+      if (doc.id === this.activeId) this.view.focus();
       return true;
     } catch (error) {
       if (error instanceof NativeSaveError && (error.phase === 'replace' || error.phase === 'unknown')) {
@@ -1836,9 +1840,14 @@ class WrytroveApp {
   }
 
   private toggleMarkdownPreview(): void {
-    this.markdownPreview.setOpen(!this.markdownPreview.isOpen());
+    const open = !this.markdownPreview.isOpen();
+    this.markdownPreview.setOpen(open);
     this.updateMarkdownPreview();
     this.view.requestMeasure();
+    // Closing the panel has to hand the caret back. The preview is not focusable, so without this
+    // the document ends up with nothing focused and the next keystroke — typed, pasted or
+    // dictated — goes nowhere until the editor is clicked again.
+    if (!open) this.view.focus();
   }
 
   private applyEditorPreferences(): void {
@@ -1909,9 +1918,22 @@ class WrytroveApp {
     if (dialog.open) return Promise.resolve('cancel');
     $('#confirm-title').textContent = title; $('#confirm-message').textContent = message; $('#confirm-eyebrow').textContent = eyebrow;
     const actions = $('#confirm-actions'); actions.replaceChildren();
+    // Remember where focus came from. A modal dialog hides that element, so Chromium falls back to
+    // <body> when the dialog closes and the next keystroke — including dictated or pasted text —
+    // goes nowhere until the editor is clicked again.
+    const restore = document.activeElement instanceof HTMLElement && document.activeElement !== document.body
+      ? document.activeElement : null;
     return new Promise((resolve) => {
       let done = false;
-      const finish = (id: string) => { if (done) return; done = true; dialog.removeEventListener('cancel', onCancel); dialog.close(); resolve(id); };
+      const finish = (id: string) => {
+        if (done) return;
+        done = true; dialog.removeEventListener('cancel', onCancel); dialog.close();
+        restore?.focus();
+        // The remembered element may itself be gone or hidden, which is what used to leave focus on
+        // <body>. Everything that opened this dialog from a menu is exactly that case.
+        if (document.activeElement !== restore) this.view?.focus();
+        resolve(id);
+      };
       const onCancel = (event: Event) => { event.preventDefault(); finish('cancel'); };
       dialog.addEventListener('cancel', onCancel, { once: true });
       const x = $('#confirm-x'); x.onclick = () => finish('cancel');
