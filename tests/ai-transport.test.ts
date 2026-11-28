@@ -11,10 +11,10 @@ describe('bounded Ollama responses', () => {
   it('reads bounded model names and completions without redirects', async () => {
     vi.mocked(nativeFetch).mockResolvedValueOnce(new Response(JSON.stringify({ models: [{ name: 'coder' }, { name: 'x'.repeat(121) }, { name: null }] })));
     await expect(listModels()).resolves.toEqual(['coder']);
-    expect(nativeFetch).toHaveBeenLastCalledWith('http://127.0.0.1:11434/api/tags', expect.objectContaining({ maxRedirections: 0 }));
+    expect(nativeFetch).toHaveBeenLastCalledWith('http://127.0.0.1:11434/api/tags', expect.objectContaining({ maxRedirections: 0, headers: expect.objectContaining({ Origin: '' }) }));
     vi.mocked(nativeFetch).mockResolvedValueOnce(new Response(JSON.stringify({ response: 'suggestion\nignored' })));
     await expect(complete('hello', 5, 'coder')).resolves.toBe('suggestion');
-    expect(nativeFetch).toHaveBeenLastCalledWith('http://127.0.0.1:11434/api/generate', expect.objectContaining({ maxRedirections: 0 }));
+    expect(nativeFetch).toHaveBeenLastCalledWith('http://127.0.0.1:11434/api/generate', expect.objectContaining({ maxRedirections: 0, headers: expect.objectContaining({ Origin: '' }) }));
   });
   it('rejects oversized declared and streamed bodies before parsing', async () => {
     vi.mocked(nativeFetch).mockResolvedValueOnce(new Response('x', { headers: { 'content-length': String(MAX_OLLAMA_RESPONSE_BYTES + 1) } }));
@@ -37,7 +37,7 @@ describe('reviewable AI actions over the Ollama transport', () => {
     await expect(runAction({ selection: 'wrote', action: 'grammar', model: 'coder' })).resolves.toBe('Fixed sentence.');
     const [url, init] = vi.mocked(nativeFetch).mock.calls[0];
     expect(url).toBe('http://127.0.0.1:11434/api/generate');
-    expect(init).toMatchObject({ method: 'POST', maxRedirections: 0 });
+    expect(init).toMatchObject({ method: 'POST', maxRedirections: 0, headers: expect.objectContaining({ Origin: '' }) });
     const body = JSON.parse(String(init?.body)) as { stream: boolean; prompt: string; model: string };
     expect(body.stream).toBe(false);
     expect(body.model).toBe('coder');
@@ -49,5 +49,29 @@ describe('reviewable AI actions over the Ollama transport', () => {
     vi.mocked(nativeFetch).mockResolvedValueOnce(new Response(JSON.stringify({ error: 'bad\n' + 'x'.repeat(400) }), { status: 400 }));
     try { await runAction({ selection: 'x', action: 'improve', model: 'coder' }); throw new Error('expected failure'); }
     catch (error) { expect((error as Error).message.length).toBeLessThanOrEqual(250); expect((error as Error).message).not.toContain('\n'); }
+  });
+});
+
+describe('Ollama requests carry no Origin', () => {
+  // tauri-plugin-http otherwise stamps the webview origin onto every request. On a
+  // Windows release build that is https://tauri.localhost, which Ollama's default
+  // CORS allow-list rejects with HTTP 403 (it covers tauri://*, the Linux/macOS
+  // origin), so installed builds could not reach a default Ollama install at all.
+  // The plugin drops an explicitly empty Origin when built with `unsafe-headers`.
+  it('sends an empty Origin on the connection check', async () => {
+    vi.mocked(nativeFetch).mockResolvedValueOnce(new Response(JSON.stringify({ models: [{ name: 'coder' }] })));
+    await expect(listModels()).resolves.toEqual(['coder']);
+    const [, init] = vi.mocked(nativeFetch).mock.calls[0];
+    expect(init?.headers).toEqual({ Origin: '' });
+  });
+
+  it('sends an empty Origin alongside the content type on both POST paths', async () => {
+    vi.mocked(nativeFetch).mockResolvedValueOnce(new Response(JSON.stringify({ response: 'suggestion' })));
+    await expect(complete('x', 1, 'coder')).resolves.toBe('suggestion');
+    expect(vi.mocked(nativeFetch).mock.calls[0][1]?.headers).toMatchObject({ Origin: '', 'Content-Type': 'application/json' });
+
+    vi.mocked(nativeFetch).mockResolvedValueOnce(new Response(JSON.stringify({ response: 'Fixed sentence.' })));
+    await expect(runAction({ selection: 'wrote', action: 'grammar', model: 'coder' })).resolves.toBe('Fixed sentence.');
+    expect(vi.mocked(nativeFetch).mock.calls[1][1]?.headers).toMatchObject({ Origin: '', 'Content-Type': 'application/json' });
   });
 });

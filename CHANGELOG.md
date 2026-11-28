@@ -28,6 +28,10 @@
 - Add **quick capture** (`Ctrl+Alt+N`) that appends a timestamped block to `Inbox.md` (or a configured note), optionally as a task list; **daily notes** (`Ctrl+Alt+D`) from an expandable template with `yyyy-mm-dd`, `yyyy-mm`, `yyyy/mm/dd` and `dd-MM-yyyy` formats; and **new note from template**.
 - Add a **note actions** set: tab outline palette (`Ctrl+Shift+O`), notes panel toggle (`Ctrl+Alt+B`), index build/clear.
 
+### Local AI transport
+
+- Stop Ollama requests from carrying an `Origin` header. `tauri-plugin-http` stamps every request with the webview's origin, which on a Windows release build is `https://tauri.localhost`; Ollama's default CORS allow-list covers `tauri://*` (Linux/macOS) but not that Windows origin, so every installed build was rejected with HTTP 403 before reaching the API while a dev build worked. Ollama requests now send an explicitly empty `Origin`, which the plugin drops via its `unsafe-headers` feature, so no origin leaves the app and a default Ollama install works unchanged. `docs/USER-GUIDE.md` documents the `OLLAMA_ORIGINS` workaround for older builds; unit tests pin the header on all three request paths.
+
 ### Tests and docs
 
 - Add the VAL-05 pre-recruitment study kit for #69: a consent script, synthetic checksummed fixtures, privacy plan, coded observation template and codebook, facilitator and assistive-technology scripts, a decision ledger, pilot-size record, and privacy-preserving aggregation tooling. Maintainer v0.1 sign-off is recorded, but no user sessions were run and no product decisions are claimed; the issue remains open until sessions or a signed pilot exception produce evidence.
