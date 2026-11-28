@@ -10,7 +10,7 @@ mod journal_key;
 mod large_file;
 mod save_transaction;
 
-use save_transaction::{PermissionAction, SaveCommit, SaveFailure, SavePhase};
+use save_transaction::{MetadataPreservation, PermissionAction, SaveCommit, SaveFailure, SavePhase};
 
 /// Authored once in `limits.json` (shared with `src/encoding.ts`); `max_file_bytes_matches_the_shared_limit`
 /// keeps this constant honest.
@@ -136,7 +136,8 @@ fn atomic_write_checked(path: &Path, data: &[u8], expected: &str, force: bool, i
             } else {
                 temp.persist(destination).map(|_| ()).map_err(|err| err.error)
             }
-        })
+        },
+        inspect_committed_metadata)
 }
 
 #[cfg(test)]
@@ -193,16 +194,20 @@ fn atomic_write_with_hook(path: &Path, data: &[u8], expected: &str, force: bool,
             } else {
                 temp.persist(destination).map(|_| ()).map_err(|err| err.error)
             }
-        }).map(|_| ()).map_err(|failure| failure.message)
+        },
+        inspect_committed_metadata).map(|_| ()).map_err(|failure| failure.message)
 }
 
 /// The injectable operations let tests simulate I/O failures at the exact boundaries without
 /// exposing fault injection through IPC. A simulated error is not evidence of OS crash durability.
+/// `inspect` runs only after a successful commit and reports what the final file's metadata can
+/// actually be compared against; it never fails the save, which has already happened.
 fn atomic_write_with_operations(
     path: &Path, data: &[u8], expected: &str, force: bool,
     opened_identity: Option<file_identity::FileIdentity>, before_commit: impl FnOnce(),
     flush: impl FnOnce(&fs::File) -> std::io::Result<()>,
     persist: impl FnOnce(tempfile::NamedTempFile, &Path, bool) -> std::io::Result<()>,
+    inspect: impl FnOnce(&Path, Option<&fs::Metadata>) -> MetadataPreservation,
 ) -> Result<SaveCommit, SaveFailure> {
     let expected = parse_expected(expected).map_err(|err| SaveFailure::new(SavePhase::Request, err))?;
     if !force && matches!(expected, ExpectedVersion::Hash(_)) && opened_identity.is_none() {
@@ -266,7 +271,49 @@ fn atomic_write_with_operations(
     })?;
     // Parent sync is best effort after commit, not an uncommitted failure or durability guarantee.
     sync_parent_directory(parent);
-    Ok(SaveCommit { identity: committed_identity, permissions })
+    let preservation = inspect(path, metadata.as_ref());
+    Ok(SaveCommit { identity: committed_identity, permissions, preservation })
+}
+
+/// Compare the file the save left behind with the one it replaced. Only fields the standard
+/// library can read on this platform are compared, so an unreachable difference is reported as
+/// unverified rather than silently assumed to be fine.
+fn inspect_committed_metadata(path: &Path, before: Option<&fs::Metadata>) -> MetadataPreservation {
+    let before = match before {
+        // The destination did not exist before the save, so there was nothing to carry over.
+        None => return MetadataPreservation::NotApplicable,
+        Some(before) => before,
+    };
+    let after = match fs::symlink_metadata(path) {
+        Ok(after) => after,
+        Err(_) => return MetadataPreservation::NotVerified,
+    };
+    if inspectable_metadata_matches(before, &after) { MetadataPreservation::Preserved }
+    else { MetadataPreservation::Changed }
+}
+
+/// Attribute bits a user would notice losing. `FILE_ATTRIBUTE_ARCHIVE` (a backup hint the OS
+/// rewrites on every write), `NORMAL`, `TEMPORARY`, `OFFLINE` and `NOT_CONTENT_INDEXED` are
+/// excluded on purpose: they change for reasons unrelated to this save, and comparing the whole
+/// word would turn an ordinary save into a false alarm.
+#[cfg(windows)]
+const PRESERVED_FILE_ATTRIBUTES: u32 = 0x1 | 0x2 | 0x4; // READONLY | HIDDEN | SYSTEM
+
+/// The Windows branch compares the attributes the rename can actually disturb plus the read-only
+/// flag, which is the only bit `set_permissions` reaches. The Unix branch compares the permission
+/// bits; ownership is deliberately not claimed, because the staged file is created by the user
+/// running Wrytrove and the rename does not change that.
+#[cfg(windows)]
+fn inspectable_metadata_matches(before: &fs::Metadata, after: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    let masked = |meta: &fs::Metadata| (meta.file_attributes() & PRESERVED_FILE_ATTRIBUTES, meta.permissions().readonly());
+    masked(before) == masked(after)
+}
+
+#[cfg(not(windows))]
+fn inspectable_metadata_matches(before: &fs::Metadata, after: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    before.permissions().mode() == after.permissions().mode()
 }
 
 /// Read the invoke payload for `safe_write`, whichever IPC transport delivered it.
@@ -371,7 +418,8 @@ async fn safe_write(app: tauri::AppHandle, request: tauri::ipc::Request<'_>) -> 
     let (data, path, expected, force, identity) = prepared;
     let result = tauri::async_runtime::spawn_blocking(move || atomic_write_checked(&path, &data, &expected, force, identity))
         .await.map_err(|err| SaveFailure::new(SavePhase::Unknown, format!("Save task did not complete: {err}")).json())?;
-    result.map(|result| save_transaction::committed(result.identity.map(|value| value.token()), result.permissions))
+    result.map(|result| save_transaction::committed(
+        result.identity.map(|value| value.token()), result.permissions, result.preservation))
         .map_err(|failure| failure.json())
 }
 
@@ -989,7 +1037,55 @@ mod tests {
         let path = dir.path().join("hello.txt");
         let result = atomic_write_checked(&path, b"hello", "absent", false, None).unwrap();
         assert_eq!(result.permissions, PermissionAction::NotApplied);
+        // A new file has no earlier metadata to carry over, so there is nothing to warn about.
+        assert_eq!(result.preservation, MetadataPreservation::NotApplicable);
         assert_eq!(fs::read(&path).unwrap(), b"hello");
+    }
+    #[test]
+    fn a_save_over_an_existing_file_reports_preserved_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.txt");
+        fs::write(&path, b"one").unwrap();
+        let (_, identity) = bounded_read_with_identity(&path, MAX_FILE_BYTES).unwrap();
+        let result = atomic_write_checked(&path, b"two", &sha256_hex(b"one"), false, identity).unwrap();
+        assert_eq!(result.permissions, PermissionAction::CopiedToTemp);
+        // The rename must leave behind a file whose inspectable metadata still matches the original.
+        assert_eq!(result.preservation, MetadataPreservation::Preserved);
+        assert_eq!(fs::read(&path).unwrap(), b"two");
+    }
+    #[test]
+    fn a_missing_file_after_the_commit_is_reported_as_unverified() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.txt");
+        fs::write(&path, b"one").unwrap();
+        let before = fs::metadata(&path).unwrap();
+        // Nothing may have replaced the file, so the inspection has nothing to compare.
+        assert_eq!(inspect_committed_metadata(&dir.path().join("gone.txt"), None), MetadataPreservation::NotApplicable);
+        assert_eq!(inspect_committed_metadata(&path, Some(&before)), MetadataPreservation::Preserved);
+        assert_eq!(inspect_committed_metadata(&dir.path().join("gone.txt"), Some(&before)), MetadataPreservation::NotVerified);
+    }
+    #[test]
+    fn a_real_metadata_difference_is_reported_rather_than_assumed_preserved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notes.txt");
+        fs::write(&path, b"one").unwrap();
+        let before = fs::metadata(&path).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // Flip a bit that is currently clear so the comparison cannot depend on the umask.
+            let mode = fs::metadata(&path).unwrap().permissions().mode();
+            let flipped = if mode & 0o222 == 0 { 0o644 } else { mode & !0o222 };
+            fs::set_permissions(&path, fs::Permissions::from_mode(flipped)).unwrap();
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::PermissionsExt;
+            let mut permissions = fs::metadata(&path).unwrap().permissions();
+            permissions.set_readonly(true);
+            fs::set_permissions(&path, permissions).unwrap();
+        }
+        assert_eq!(inspect_committed_metadata(&path, Some(&before)), MetadataPreservation::Changed);
     }
     #[test]
     fn save_metadata_must_be_explicit_and_valid() {
@@ -1042,7 +1138,8 @@ mod tests {
         let result = atomic_write_with_operations(&path, b"new", &sha256_hex(b"original"), false, Some(identity),
             move || fs::write(target, b"external").unwrap(),
             |file| file.sync_all(),
-            |_, _, _| panic!("a conflict must not reach replacement"));
+            |_, _, _| panic!("a conflict must not reach replacement"),
+            |_, _| panic!("a conflict must not reach replacement"));
         let failure = result.unwrap_err();
         assert_eq!(failure.phase, SavePhase::Revalidate);
         assert!(failure.conflict);
@@ -1062,7 +1159,8 @@ mod tests {
         let result = atomic_write_with_operations(&path, b"updated", &expected, false, Some(identity),
             || hook_called.set(true),
             |_| Err(std::io::Error::new(std::io::ErrorKind::Other, "injected flush failure")),
-            |_, _, _| { commit_attempted.set(true); Ok(()) });
+            |_, _, _| { commit_attempted.set(true); Ok(()) },
+            |_, _| panic!("a flush failure must not reach replacement"));
         let failure = result.unwrap_err();
         assert_eq!(failure.phase, SavePhase::FlushTemp);
         assert!(!failure.conflict);
@@ -1086,7 +1184,8 @@ mod tests {
                 assert!(!no_clobber);
                 assert_eq!(fs::read(temporary.path()).unwrap(), b"updated");
                 Err(std::io::Error::new(std::io::ErrorKind::Other, "injected replace failure"))
-            });
+            },
+            |_, _| panic!("a failed replacement must not be inspected"));
         let failure = result.unwrap_err();
         assert_eq!(failure.phase, SavePhase::Replace);
         assert!(!failure.conflict);

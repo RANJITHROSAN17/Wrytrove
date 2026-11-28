@@ -105,7 +105,7 @@ describe('native save IPC safety metadata', () => {
     vi.mocked(invoke).mockResolvedValue({ phase: 'committed', identity: NEXT_ID });
     const result = await writeTo(ref, bytes, 'draft.txt', null);
     expect(result.digest).toMatch(/^[0-9a-f]{64}$/u);
-    expect(result.nativeMetadata).toEqual({ permissions: 'unknown' });
+    expect(result.nativeMetadata).toEqual({ permissions: 'unknown', preservation: 'unknown' });
     expect(ref.identity).toBe(NEXT_ID);
     expect(safeWrites()).toHaveLength(1);
     expect(safeWrites()[0]).toEqual(['safe_write', bytes, { headers: {
@@ -134,22 +134,39 @@ describe('native save IPC safety metadata', () => {
   });
 
   it('reports the staged permissions operation without treating missing or malformed reports as failed writes', async () => {
-    for (const [metadata, permissions] of [
-      [{ permissions: 'copied_to_temp', acl: 'not_verified', other: 'not_verified' }, 'copied_to_temp'],
-      [{ permissions: 'not_applied', acl: 'not_verified', other: 'not_verified' }, 'not_applied'],
-      [undefined, 'unknown'], [null, 'unknown'], [{ permissions: 'preserved' }, 'unknown'],
+    for (const [metadata, expected] of [
+      [{ permissions: 'copied_to_temp', preservation: 'preserved' }, { permissions: 'copied_to_temp', preservation: 'preserved' }],
+      [{ permissions: 'not_applied', preservation: 'not_applicable' }, { permissions: 'not_applied', preservation: 'not_applicable' }],
+      [{ permissions: 'copied_to_temp', preservation: 'changed' }, { permissions: 'copied_to_temp', preservation: 'changed' }],
+      // An unrecognized or absent value stays advisory; it never fails a committed write.
+      [{ permissions: 'preserved' }, { permissions: 'unknown', preservation: 'unknown' }],
+      [undefined, { permissions: 'unknown', preservation: 'unknown' }],
+      [null, { permissions: 'unknown', preservation: 'unknown' }],
+      [{}, { permissions: 'unknown', preservation: 'unknown' }],
     ] as const) {
       useInvoke(() => ({ phase: 'committed', identity: NEXT_ID, metadata }));
       const result = await writeTo(ref, bytes, 'draft.txt', null);
-      expect(result.nativeMetadata).toEqual({ permissions });
+      expect(result.nativeMetadata).toEqual(expected);
       expect(ref.identity).toBe(NEXT_ID);
     }
-    const copied = describeNativeSaveMetadata({ permissions: 'copied_to_temp' });
-    expect(copied).toContain('temporary file');
-    expect(copied).toContain('final permissions were not verified');
-    for (const permissions of ['copied_to_temp', 'not_applied', 'unknown'] as const) {
-      expect(describeNativeSaveMetadata({ permissions })).toContain('ACLs and other metadata were not verified and may change');
+  });
+
+  it('raises a save notice only for a detected or unverifiable metadata difference', () => {
+    // A save that preserved everything it could check says nothing at all, so the banner stays hidden.
+    for (const preservation of ['preserved', 'not_applicable', 'unknown'] as const) {
+      expect(describeNativeSaveMetadata({ permissions: 'copied_to_temp', preservation })).toBe('');
     }
+    expect(describeNativeSaveMetadata({ permissions: 'not_applied', preservation: 'not_applicable' })).toBe('');
+    // The staged operation alone is not a statement about the file the user ends up with.
+    expect(describeNativeSaveMetadata({ permissions: 'copied_to_temp' })).toBe('');
+    expect(describeNativeSaveMetadata({ permissions: 'not_applied' })).toBe('');
+    expect(describeNativeSaveMetadata({ permissions: 'unknown' })).toBe('');
+    expect(describeNativeSaveMetadata({ permissions: 'copied_to_temp', preservation: 'changed' }))
+      .toBe('The saved file’s attributes differ from the original, so some file metadata was not carried over.');
+    expect(describeNativeSaveMetadata({ permissions: 'copied_to_temp', preservation: 'not_verified' }))
+      .toBe('The saved file could not be checked after writing, so some file metadata may not have been carried over.');
+    // An unrecognized value must never be turned into a claim about the file on disk.
+    expect(describeNativeSaveMetadata({ permissions: 'copied_to_temp', preservation: 'bogus' as 'unknown' })).toBe('');
   });
 
   it('requires conflict handling when the identity is missing, including recovered tabs', async () => {

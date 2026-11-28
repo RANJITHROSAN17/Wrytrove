@@ -771,8 +771,11 @@ class WrytroveApp {
   }
 
   private reportNativeSaveMetadata(name: string, metadata: NativeSaveMetadata): void {
-    $('#save-metadata-message').textContent = `Saved “${name}”. ${describeNativeSaveMetadata(metadata)}`;
-    $('#save-metadata-warning').hidden = false;
+    const description = describeNativeSaveMetadata(metadata);
+    // A save that preserved everything it could check must not raise a notice. The banner is for a
+    // detected difference or a failed check only; a permanent warning trains users to ignore it.
+    $('#save-metadata-message').textContent = description ? `Saved “${name}”. ${description}` : '';
+    $('#save-metadata-warning').hidden = description.length === 0;
   }
 
   private async saveDoc(doc: Doc, saveAs = false): Promise<boolean> {
