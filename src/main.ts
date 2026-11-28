@@ -2022,7 +2022,14 @@ class WrytroveApp {
     this.applySettings(); this.updateStatus(); this.scheduleRecovery();
     return saved;
   }
-  private toggleSidebar(): void { this.settings.sidebar = !this.settings.sidebar; this.persistSettings(); }
+  private toggleSidebar(): void {
+    // Both sidebar buttons hide themselves as part of the toggle — the hide button lives inside the
+    // panel it closes, and the show button is hidden again as soon as the panel returns. Hiding the
+    // element that holds the caret blurs it to <body>, which discards the next keystroke.
+    this.view?.focus();
+    this.settings.sidebar = !this.settings.sidebar;
+    this.persistSettings();
+  }
   private toggleWrap(): void { this.settings.wrap = !this.settings.wrap; this.persistSettings(); this.toast(`Word wrap ${this.settings.wrap ? 'on' : 'off'}.`); }
   private toggleTheme(): void { this.settings.theme = this.settings.theme === 'dark' ? 'light' : 'dark'; this.persistSettings(); }
 
@@ -2048,9 +2055,12 @@ class WrytroveApp {
         if (done) return;
         done = true; dialog.removeEventListener('cancel', onCancel); dialog.close();
         restore?.focus();
-        // The remembered element may itself be gone or hidden, which is what used to leave focus on
-        // <body>. Everything that opened this dialog from a menu is exactly that case.
-        if (document.activeElement !== restore) this.view?.focus();
+        // The caret is unusable in two ways here, and both need an explicit focus() on the editor:
+        // the remembered element is gone or hidden — everything opened from a menu is exactly that —
+        // and, even when focus already looks back on the editor, showing a modal disturbed
+        // CodeMirror's DOM selection, so dictated or pasted text lands nowhere. A dialog opened
+        // from a control must return focus to that control instead, so only the editor case forces it.
+        if (!restore || restore.closest('.cm-editor') || document.activeElement !== restore) this.view?.focus();
         resolve(id);
       };
       const onCancel = (event: Event) => { event.preventDefault(); finish('cancel'); };
@@ -2138,6 +2148,10 @@ class WrytroveApp {
   private async handleAction(action: string): Promise<void> {
     this.closeMenus();
     if (await this.workbench.action(action)) return;
+    await this.dispatchAction(action);
+  }
+
+  private async dispatchAction(action: string): Promise<void> {
     switch (action) {
       case 'new': this.newFile(); break;
       case 'open': await this.openFiles(); break;
@@ -2187,6 +2201,12 @@ class WrytroveApp {
   }
 
   private closeMenus(): void {
+    // Hiding a panel that contains the focused element blurs it to <body>, and a document with
+    // nothing focused silently discards the next keystroke. Move the caret to the editor first so
+    // the browser's focus fixup has a valid target. The menu trigger itself is not inside a panel,
+    // so reopening a menu is unaffected.
+    const active = document.activeElement;
+    if (active instanceof HTMLElement && active.closest('[data-menu-panel]')) this.view?.focus();
     document.querySelectorAll<HTMLElement>('[data-menu-panel]').forEach((panel) => { panel.hidden = true; });
     document.querySelectorAll<HTMLElement>('[data-menu]').forEach((button) => button.setAttribute('aria-expanded', 'false'));
   }

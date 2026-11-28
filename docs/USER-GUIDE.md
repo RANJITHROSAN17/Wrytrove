@@ -203,6 +203,10 @@ In either workflow, review works on **one nonempty selected range** (up to 100,0
 
 The app was previously named Morrow. Wrytrove reads old local settings (`morrow.settings.v1`), daily goals (`morrow.goal.v1`) and recovery databases (`morrow-local-session-v1`) when no current-brand record exists. New writes use the `wrytrove.*` / `wrytrove-local-session-v1` names. Old records are not deleted merely by reading them, so a failed migration cannot erase the only recovery copy. The desktop bundle identifier is deliberately kept as `app.morrow.editor`, so the WebView data directory (local storage, IndexedDB recovery and persisted folder access) stays where it was. Changing it would silently move that data. The installer's product name and install folder do change to Wrytrove, so check the installed app's file associations after upgrading.
 
+## Where the caret goes
+
+The caret stays in the editor after menu actions, toolbar buttons, dialogs and saves, so typing, pasting and dictating all land where you left off. If a control needs the caret for itself — the find box, a dialog field, a status-bar selector, or the button you just clicked for keyboard use — it keeps it, and closing that control returns the caret to the editor. Nothing in the app requires you to click back into the document before you can type.
+
 ## Current limitations and safety notes
 
 - The ordinary editor and browser opening path have a **20 MiB maximum per file**. Desktop opening can switch to [the read-only large-file viewer](#large-text-files-desktop) above the current editable budget. Native reads are bounded before crossing IPC and reject direct symbolic links or reparse points; open the real file instead. ANSI/legacy code pages, UTF-32, exact preservation of mixed line endings, and binary/hex editing are not implemented.

@@ -21,6 +21,13 @@
 - Add optional **smart typography** (curly quotes, dashes, ellipsis) that only ever rewrites a single typed character, never a paste or IME composition, and never inside code.
 - Add settings for font family (editor/serif/sans/mono), browser spell-check, a ruler column, minimap, smart typography, focus scope, daily goal and the daily-note folder. Stored daily-note folders are validated as relative paths so a note can never be written outside the workspace.
 
+### The caret
+
+- Keep the caret in the editor after **every** menu action. Closing a menu hid the panel that held the focused menu item, so the browser blurred to `<body>` and the next keystroke — typed, pasted or dictated — was discarded with no visible error. That is the "text only appears once I click back into the editor" report, and it affected the View and Notes menus wholesale rather than one button.
+- Keep the caret after **hiding and showing the sidebar**. Both buttons hide themselves as part of the toggle, which orphaned focus the same way.
+- Keep the caret after a **confirm dialog opened from a menu**, even though the menu item that opened it is gone by the time the dialog closes. Showing a modal also disturbs CodeMirror's DOM selection, so the editor now gets a real `focus()` call rather than relying on the browser restoring it.
+- Add `tests/e2e/caret-preservation.spec.ts` (18 tests). It checks the invariant after every interaction instead of on paths someone thought to write down, and it asserts the opposite rule too: focus that an action placed on purpose — a find box, a dialog input, a status-bar select, the menu trigger, a toolbar button — is never stolen back. Fixing the first rule by breaking the second is the easy mistake, and it wrecks keyboard use. Reverting either fix makes exactly four of these tests fail.
+
 ### Voice
 
 - Add **dictation** (`Ctrl+Shift+M`, or the microphone button in the toolbar): speech is recorded in the app and transcribed by a speech server on your own computer, then inserted at the caret in one undo step per spoken chunk. Consent is per-session and never written to storage, so a restart always starts with the microphone closed, and a live session is shown as a pulsing **Listening** status chip.
