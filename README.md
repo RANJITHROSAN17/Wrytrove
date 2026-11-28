@@ -42,6 +42,7 @@
 - **Capability-Gated AI & Verifiable Citations:** Explicit session consent and pre-send byte/hash previews (`src/ai-provider.ts`) for local **Ollama** or **Arena**, plus **Ask-Document Q&A** (`src/ask-document.ts`) that verifies every cited line range and SHA-256 hash—marking unverified claims as `citation unavailable`.
 - **Reviewable Note Move & Link Repair:** `src/note-transaction.ts` previews affected `[[wikilinks]]`, flags ambiguous stem matches for manual review, verifies expected file hashes, and rebuilds the index only after commit.
 - **Untrusted-Workspace Tool Broker:** `src/tool-broker.ts` keeps subprocess execution disabled by default in untrusted workspaces and enforces environment allowlists.
+- **On-Device Dictation:** `src/dictation.ts` records speech in the app and transcribes it with a speech server on your own computer (`Ctrl+Shift+M` or the toolbar mic). Consent is per-session and never persisted, and the reachable endpoints are three pinned loopback addresses — no audio can be sent to a third party.
 - **Large-File Streaming:** Streams 100–500 MiB files in bounded windows with cancelable worker search (`src/large-file-view.ts`).
 
 ---

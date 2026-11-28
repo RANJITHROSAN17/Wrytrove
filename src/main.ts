@@ -29,6 +29,7 @@ import { makeReviewTarget, reviewTargetIsCurrent, type ReviewTarget } from './ch
 import { readWorkspaceFile, type WorkspaceFile } from './workspace';
 import { Workbench } from './workbench';
 import { MarkdownPreview } from './markdown-preview';
+import { DictationEngine, LOCAL_SPEECH_ENDPOINTS, defaultDictationDependencies, joinDictatedText, normalizeChunkMs, normalizeSpeechLanguage, speechEndpoint, type DictationStatus } from './dictation';
 import { applyLineOperation, type LineOperation } from './line-ops';
 import { applySmartTypography, toggleBold, toggleBulletList, toggleHeading, toggleItalic, toggleInlineCode, toggleNumberedList, toggleQuote, toggleStrikethrough, toggleTaskList, wrapCodeBlock, wrapLink, type TextEdit } from './markdown-format';
 import { countTextStats, describeStats, isLargeDocument, type TextStats } from './word-stats';
@@ -103,6 +104,10 @@ class WrytroveApp {
   private recentClearFailed = false;
   private workbench: Workbench;
   private markdownPreview = new MarkdownPreview();
+  private dictation: DictationEngine | null = null;
+  /** Document offset where this session's dictated run begins, and how much of it is dictated text. */
+  private dictatedAnchor = 0;
+  private dictatedLength = 0;
   private recoveryBlocked = false;
   private recoveryCleanupFailed = false;
   private recoveryOperationBusy = false;
@@ -1850,6 +1855,119 @@ class WrytroveApp {
     if (!open) this.view.focus();
   }
 
+  // ── Dictation ─────────────────────────────────────────────────────────────────────────────────
+  // The microphone is opened only by an explicit click on the mic button, and consent is
+  // deliberately session-only: loadSettings never returns dictation.enabled === true, so a launch
+  // cannot start recording on its own.
+
+  /**
+   * The toolbar mic button. Pressing it while already listening stops, so a single control both
+   * starts and ends a session; the status is the only thing that changes.
+   */
+  private toggleDictation(): void {
+    if (this.dictation?.getStatus() === 'listening' || this.dictation?.getStatus() === 'starting') {
+      this.stopDictation();
+      return;
+    }
+    this.startDictation();
+  }
+
+  private startDictation(): void {
+    const settings = this.settings.dictation;
+    if (!settings.enabled) {
+      this.announceDictation('Dictation is off. Turn it on in Settings first.');
+      return;
+    }
+    // Text lands where the caret is, so an unfocused editor would swallow it silently.
+    if (!this.view) { this.announceDictation('No document is open to dictate into.'); return; }
+    this.view.focus();
+    this.dictatedAnchor = this.view.state.doc.length;
+    this.dictatedLength = 0;
+    const endpoint = speechEndpoint(settings.endpoint);
+    this.dictation = new DictationEngine(
+      {
+        onStatus: (status) => this.renderDictationStatus(status),
+        onError: (message) => this.announceDictation(message),
+        onText: (text) => this.insertDictatedText(text),
+      },
+      defaultDictationDependencies(endpoint, settings.language),
+    );
+    void this.dictation.start(settings.chunkMs);
+  }
+
+  private stopDictation(): void {
+    this.dictation?.stop();
+    this.renderDictationStatus('off');
+  }
+
+  /**
+   * Recognised text is appended to the run this session owns. Replacing only that run means the
+   * separator the recogniser left out really is inserted, and anything the user typed after the
+   * dictated text survives the next chunk. One transaction per chunk, so a single undo removes a
+   * whole sentence rather than one character at a time.
+   */
+  private insertDictatedText(text: string): void {
+    if (!this.view) return;
+    const current = this.view.state.doc.sliceString(this.dictatedAnchor, this.dictatedAnchor + this.dictatedLength);
+    const merged = joinDictatedText(current, text);
+    const transaction = this.view.state.update({
+      changes: { from: this.dictatedAnchor, to: this.dictatedAnchor + this.dictatedLength, insert: merged },
+      userEvent: 'input.dictation',
+    });
+    this.view.dispatch(transaction);
+    this.dictatedLength = merged.length;
+    this.view.focus();
+  }
+
+  private announceDictation(message: string): void {
+    this.toast(message);
+    this.renderDictationStatus('error');
+  }
+
+  private renderDictationStatus(status?: DictationStatus): void {
+    const current = status ?? this.dictation?.getStatus() ?? 'off';
+    const button = $('#dictate-button');
+    const chip = $('#dictation-chip');
+    const chipText = $('#dictation-chip-text');
+    const label = $('#dictation-status');
+    const listening = current === 'listening' || current === 'starting';
+    button.setAttribute('aria-pressed', String(listening));
+    button.setAttribute('aria-label', listening ? 'Stop dictation' : 'Start dictation');
+    button.title = listening ? 'Stop dictation (Ctrl+Shift+M)' : 'Dictate (Ctrl+Shift+M)';
+    chip.hidden = !listening;
+    chipText.textContent = current === 'starting' ? 'Starting…' : 'Listening';
+    const state = this.settings.dictation.enabled ? 'On' : 'Off';
+    label.textContent = listening ? (current === 'starting' ? 'Starting…' : 'Listening') : state;
+    const help = $('#dictation-help');
+    if (help) help.textContent = listening
+      ? 'Speak now. Click the mic button again to stop.'
+      : 'Pick a speech server, then press the mic button in the toolbar.';
+  }
+
+  private renderDictationSettings(): void {
+    const server = $<HTMLSelectElement>('#setting-speech-server');
+    if (server.options.length === 0) {
+      for (const entry of LOCAL_SPEECH_ENDPOINTS) {
+        const option = document.createElement('option');
+        option.value = entry.id;
+        option.textContent = entry.label;
+        server.append(option);
+      }
+    }
+    server.value = this.settings.dictation.endpoint;
+    $<HTMLSelectElement>('#setting-dictation-chunk').value = String(this.settings.dictation.chunkMs);
+    $<HTMLInputElement>('#setting-dictation-language').value = this.settings.dictation.language;
+    $('#setting-dictation').setAttribute('aria-checked', String(this.settings.dictation.enabled));
+    this.renderDictationStatus();
+  }
+
+  /** Turn dictation off, releasing the microphone, whenever a session ends. */
+  private resetDictationConsent(): void {
+    this.stopDictation();
+    this.settings.dictation.enabled = false;
+    this.renderDictationSettings();
+  }
+
   private applyEditorPreferences(): void {
     if (!this.view) return;
     applyEditorExtensions(this.view, this.settings);
@@ -1889,6 +2007,7 @@ class WrytroveApp {
     $('#setting-typewriter').setAttribute('aria-checked', String(this.settings.focus.typewriter));
     $('#setting-focus-scope').textContent = `Scope: ${this.settings.focus.scope}`;
     $<HTMLInputElement>('#setting-daily-folder').value = this.settings.daily.folder;
+    this.renderDictationSettings();
     $('#setting-goal-value').textContent = this.goalTracker.target ? `${this.goalTracker.words.toLocaleString()} of ${this.goalTracker.target.toLocaleString()}` : 'Off';
     this.applyEditorPreferences();
     this.renderRecoveryStatus();
@@ -2033,6 +2152,7 @@ class WrytroveApp {
       case 'sidebar': this.toggleSidebar(); break;
       case 'wrap': this.toggleWrap(); break;
       case 'preview-markdown': this.toggleMarkdownPreview(); break;
+      case 'dictate': this.toggleDictation(); break;
       case 'theme': this.toggleTheme(); break;
       case 'settings': this.showDialog('settings-dialog'); void this.renderAccessLeases(); break;
       case 'shortcuts': this.showDialog('help-dialog'); break;
@@ -2457,6 +2577,43 @@ class WrytroveApp {
       if (value && !isSafeRelativePath(value)) { this.toast('That folder path is not valid; keeping the previous value.'); (event.target as HTMLInputElement).value = this.settings.daily.folder; return; }
       this.settings.daily.folder = value; this.persistSettings();
     });
+    // ── Dictation settings ──
+    $('#setting-dictation').addEventListener('click', () => {
+      const enabled = !this.settings.dictation.enabled;
+      this.settings.dictation.enabled = enabled;
+      this.persistSettings();
+      this.renderDictationStatus();
+      this.toast(enabled
+        ? 'Dictation is on for this session only. It is never remembered, and no audio leaves this computer.'
+        : 'Dictation is off. The microphone is closed.');
+      if (!enabled) this.stopDictation();
+    });
+    $('#setting-speech-server').addEventListener('change', (event) => {
+      const select = event.target as HTMLSelectElement;
+      const entry = LOCAL_SPEECH_ENDPOINTS.find((candidate) => candidate.id === select.value);
+      if (!entry) { select.value = this.settings.dictation.endpoint; return; }
+      if (this.dictation?.getStatus() === 'listening') this.stopDictation();
+      this.settings.dictation.endpoint = entry.id;
+      this.persistSettings();
+      this.renderDictationSettings();
+    });
+    $('#setting-dictation-chunk').addEventListener('change', (event) => {
+      const value = Number((event.target as HTMLSelectElement).value);
+      this.settings.dictation.chunkMs = normalizeChunkMs(value);
+      (event.target as HTMLSelectElement).value = String(this.settings.dictation.chunkMs);
+      this.persistSettings();
+    });
+    $('#setting-dictation-language').addEventListener('change', (event) => {
+      const input = event.target as HTMLInputElement;
+      const language = normalizeSpeechLanguage(input.value);
+      input.value = language;
+      this.settings.dictation.language = language;
+      this.persistSettings();
+    });
+    // The toolbar button already carries data-action="dictate", which the document-level click
+    // delegation routes to handleAction. A second listener here would fire toggleDictation twice
+    // and cancel the session it just started. The status chip is the same command.
+    $('#dictation-chip').addEventListener('click', () => this.toggleDictation());
     $('#ai-toggle').addEventListener('click', () => { void this.toggleAi(); });
     $('#ai-action-run').addEventListener('click', () => { void this.runAiAction(); });
     $('#ai-action-cancel').addEventListener('click', () => this.cancelAiAction());
@@ -2491,6 +2648,8 @@ class WrytroveApp {
     window.addEventListener('beforeunload', (event) => {
       // Desktop close has its own per-document confirmation; avoid a second WebView prompt.
       if (!desktop && (!this.settings.recovery || this.recoveryBlocked || this.recoveryFailed) && this.docs.some((doc) => this.dirty(doc))) { event.preventDefault(); event.returnValue = ''; }
+      // A recording must not outlive the window, and consent must not survive a reload.
+      this.resetDictationConsent();
     });
   }
 
@@ -2588,6 +2747,7 @@ class WrytroveApp {
       return;
     }
     if (mod && event.shiftKey && event.code === 'KeyO') { event.preventDefault(); event.stopPropagation(); this.showTabOutline(); return; }
+    if (mod && event.shiftKey && event.code === 'KeyM' && !event.altKey) { event.preventDefault(); event.stopPropagation(); this.toggleDictation(); return; }
     if (mod && event.shiftKey && /^Digit[1-6]$/u.test(event.code)) {
       event.preventDefault(); event.stopPropagation();
       this.runFormat(`heading-${event.code.slice(-1)}`);
